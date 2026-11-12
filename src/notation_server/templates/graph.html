@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>notation</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="/static/app.css">
+  <style>{{ highlight_css }}</style>
+  <script id="config" type="application/json">{{ config | tojson }}</script>
+  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body hx-headers='{"{{ token_header }}": "{{ token }}"}'>
+  <main>
+    <section id="graph-pane">
+      <div id="toolbar">
+        <input id="search" type="search" placeholder="Search titles, aliases, ids…" autocomplete="off">
+        <label>Colour by
+          <select id="colour-by">
+            <option value="tag">tag</option>
+            <option value="subdir">folder</option>
+          </select>
+        </label>
+        <label>Show
+          <select id="depth">
+            <option value="0">all notes</option>
+            <option value="1">1 hop</option>
+            <option value="2">2 hops</option>
+            <option value="3">3 hops</option>
+          </select>
+        </label>
+        <label>Hide tags <input id="exclude-tags" type="text" size="10"></label>
+        <span id="stats"></span>
+      </div>
+      <div id="legend" aria-label="Colour legend"></div>
+      <div id="graph" role="img" aria-label="Graph of linked notes"></div>
+      <div id="problems" hidden></div>
+    </section>
+    <aside id="panel">
+      <p class="muted">Click a note in the graph to view it.</p>
+    </aside>
+  </main>
+  <div id="toast" role="status" hidden></div>
+</body>
+</html>
