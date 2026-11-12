@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <style>{{ highlight_css }}</style>
   <script id="config" type="application/json">{{ config | tojson }}</script>
-  <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/3d-force-graph@1.80.2/dist/3d-force-graph.min.js"></script>
   <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
@@ -31,10 +31,12 @@
           </select>
         </label>
         <label>Hide tags <input id="exclude-tags" type="text" size="10"></label>
+        <label><input id="hide-orphans" type="checkbox" checked> Hide unlinked</label>
+        <label><input id="group" type="checkbox"> Group by colour</label>
         <span id="stats"></span>
       </div>
       <div id="legend" aria-label="Colour legend"></div>
-      <div id="graph" role="img" aria-label="Graph of linked notes"></div>
+      <div id="graph" role="img" aria-label="3D graph of linked notes. Drag to rotate, scroll to zoom, right-drag to pan."></div>
       <div id="problems" hidden></div>
     </section>
     <aside id="panel">

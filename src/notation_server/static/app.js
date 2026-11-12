@@ -1,21 +1,34 @@
-// Graph of notes (Cytoscape) + note panel (HTMX) + live updates (SSE).
+// Graph of notes (3d-force-graph) + note panel (HTMX) + live updates (SSE).
 "use strict";
 
 const cfg = JSON.parse(document.getElementById("config").textContent);
 const SLOTS = 8; // categorical colour slots; further categories fold into "other"
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-let cy = null;
+let fg = null; // the ForceGraph3D instance
 let selectedId = null;
+let hoverId = null;
 let graph = { nodes: [], edges: [], problems: [] };
 let slotOf = new Map(); // category -> slot index, fixed from the whole corpus
+// Node and link objects persist across refreshes and filter changes, so
+// the simulation keeps their positions instead of starting over.
+const nodeById = new Map();
+let links = [];
+let neighbours = new Map(); // id -> Set of ids linked either way (whole corpus)
+let shown = { nodes: [], links: [] };
+let shownKey = "";
+let matches = null; // Set of ids matching the search, or null when not searching
 
 const $ = (sel) => document.querySelector(sel);
 const searchInput = $("#search");
 const colourBy = $("#colour-by");
 const depthSelect = $("#depth");
 const excludeInput = $("#exclude-tags");
+const hideOrphans = $("#hide-orphans");
+const groupInput = $("#group");
 excludeInput.value = cfg.excludeTags.join(",");
+
+const idOf = (end) => (typeof end === "object" ? end.id : end);
 
 function category(node) {
   if (colourBy.value === "subdir") return node.subdir || "(root)";
@@ -38,6 +51,12 @@ function colourFor(cat) {
   return slotOf.has(cat) ? css(`--series-${slotOf.get(cat) + 1}`) : css("--other");
 }
 
+function withAlpha(hex, alpha) {
+  const h = hex.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 function renderLegend() {
   const items = [...slotOf.keys()].map(
     (c) => `<span><span class="swatch" style="background:${colourFor(c)}"></span>${escapeHtml(c)}</span>`,
@@ -50,61 +69,81 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
-function style() {
-  return [
-    {
-      selector: "node",
-      style: {
-        "background-color": "data(colour)",
-        label: "data(title)",
-        color: css("--text-secondary"),
-        "font-size": 11,
-        "min-zoomed-font-size": 9,
-        "text-valign": "bottom",
-        "text-margin-y": 3,
-        width: "mapData(degree, 0, 20, 10, 34)",
-        height: "mapData(degree, 0, 20, 10, 34)",
-        "border-width": 2,
-        "border-color": css("--surface-1"),
-      },
-    },
-    {
-      selector: "edge",
-      style: {
-        width: 1.2,
-        "line-color": css("--edge"),
-        "target-arrow-color": css("--edge"),
-        "target-arrow-shape": "triangle",
-        "arrow-scale": 0.7,
-        "curve-style": "bezier",
-      },
-    },
-    { selector: ".hidden", style: { display: "none" } },
-    { selector: ".faded", style: { opacity: 0.15 } },
-    {
-      selector: "node:selected, node.match",
-      style: { "border-color": css("--text-primary"), "border-width": 3, color: css("--text-primary"), "z-index": 10 },
-    },
-    {
-      selector: "edge.incident",
-      style: { "line-color": css("--text-secondary"), "target-arrow-color": css("--text-secondary"), width: 2 },
-    },
-  ];
+// Styling. A selected note keeps its neighbours at full strength and fades
+// the rest; a search fades everything that doesn't match.
+
+function emphasised(id) {
+  if (matches) return matches.has(id);
+  if (!selectedId) return true;
+  return id === selectedId || (neighbours.get(selectedId) || new Set()).has(id);
 }
 
-function elements() {
-  const degree = new Map();
-  for (const e of graph.edges) {
-    degree.set(e.source, (degree.get(e.source) || 0) + 1);
-    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+function nodeColour(n) {
+  if (n.id === selectedId || n.id === hoverId) return css("--text-primary");
+  const base = colourFor(category(n));
+  return emphasised(n.id) ? base : withAlpha(base, 0.12);
+}
+
+function incident(l) {
+  return selectedId && (idOf(l.source) === selectedId || idOf(l.target) === selectedId);
+}
+
+function linkColour(l) {
+  if (incident(l)) return css("--text-secondary");
+  return withAlpha(css("--edge"), matches || selectedId ? 0.08 : 0.5);
+}
+
+function restyle() {
+  if (!fg) return;
+  fg.nodeColor(fg.nodeColor()).linkColor(fg.linkColor()).linkWidth(fg.linkWidth());
+}
+
+// Pull nodes that share a colour slot towards their group's centroid, so
+// each tag (or folder) forms its own region instead of one tangled ball.
+function clusterForce() {
+  let nodes = [];
+  function force(alpha) {
+    if (!groupInput.checked) return;
+    const centres = new Map();
+    for (const n of nodes) {
+      const cat = category(n);
+      if (!slotOf.has(cat)) continue;
+      let c = centres.get(cat);
+      if (!c) centres.set(cat, (c = { x: 0, y: 0, z: 0, count: 0 }));
+      c.x += n.x; c.y += n.y; c.z += n.z || 0; c.count++;
+    }
+    const k = alpha * 0.25;
+    for (const n of nodes) {
+      const c = centres.get(category(n));
+      if (!c || c.count < 2) continue;
+      n.vx += (c.x / c.count - n.x) * k;
+      n.vy += (c.y / c.count - n.y) * k;
+      n.vz += (c.z / c.count - (n.z || 0)) * k;
+    }
   }
-  return [
-    ...graph.nodes.map((n) => ({
-      group: "nodes",
-      data: { ...n, colour: colourFor(category(n)), degree: degree.get(n.id) || 0 },
-    })),
-    ...graph.edges.map((e) => ({ group: "edges", data: { id: `${e.source}>${e.target}`, ...e } })),
-  ];
+  force.initialize = (ns) => { nodes = ns; };
+  return force;
+}
+
+function syncData() {
+  const fresh = new Set();
+  for (const n of graph.nodes) {
+    fresh.add(n.id);
+    const existing = nodeById.get(n.id);
+    if (existing) Object.assign(existing, n);
+    else nodeById.set(n.id, { ...n });
+  }
+  for (const id of [...nodeById.keys()]) if (!fresh.has(id)) nodeById.delete(id);
+
+  links = graph.edges.map((e) => ({ source: e.source, target: e.target }));
+  neighbours = new Map();
+  for (const e of graph.edges) {
+    if (!neighbours.has(e.source)) neighbours.set(e.source, new Set());
+    if (!neighbours.has(e.target)) neighbours.set(e.target, new Set());
+    neighbours.get(e.source).add(e.target);
+    neighbours.get(e.target).add(e.source);
+  }
+  shownKey = ""; // links are new objects, so the next applyFilters must push them
 }
 
 async function loadGraph() {
@@ -114,76 +153,90 @@ async function loadGraph() {
   assignSlots();
   renderLegend();
   renderProblems();
+  syncData();
 
-  if (!cy) {
-    cy = cytoscape({ container: $("#graph"), elements: elements(), style: style(), wheelSensitivity: 0.3 });
-    cy.on("tap", "node", (evt) => focusNote(evt.target.id()));
-    cy.on("tap", (evt) => { if (evt.target === cy) clearSelection(); });
-    applyFilters();
-    runLayout(true);
-  } else {
-    const positions = new Map(cy.nodes().map((n) => [n.id(), { ...n.position() }]));
-    cy.elements().remove();
-    cy.add(elements());
-    const fresh = cy.nodes().filter((n) => !positions.has(n.id()));
-    cy.nodes().forEach((n) => { if (positions.has(n.id())) n.position(positions.get(n.id())); });
-    applyFilters();
-    if (fresh.length) runLayout(false);
+  if (!fg) {
+    const el = $("#graph");
+    fg = ForceGraph3D()(el)
+      .backgroundColor(css("--surface-1"))
+      .showNavInfo(false)
+      .nodeId("id")
+      .nodeLabel((n) => `<div class="node-tip">${escapeHtml(n.title)}<br><span>${n.id}${
+        n.tags.length ? " · " + escapeHtml(n.tags.join(" ")) : ""}</span></div>`)
+      .nodeVal((n) => 1 + (neighbours.get(n.id)?.size || 0))
+      .nodeRelSize(3)
+      .nodeOpacity(0.95)
+      .nodeColor(nodeColour)
+      .linkColor(linkColour)
+      .linkWidth((l) => (incident(l) ? 1.2 : 0))
+      .linkDirectionalArrowLength(2.5)
+      .linkDirectionalArrowRelPos(1)
+      .onNodeClick((n) => focusNote(n.id))
+      .onNodeHover((n) => {
+        hoverId = n ? n.id : null;
+        el.style.cursor = n ? "pointer" : "";
+        restyle();
+      })
+      .onBackgroundClick(() => clearSelection());
+    fg.d3Force("charge").strength(-40);
+    fg.d3Force("link").distance(30);
+    fg.d3Force("cluster", clusterForce());
+    new ResizeObserver(() => fg.width(el.clientWidth).height(el.clientHeight)).observe(el);
   }
-  if (selectedId && cy.getElementById(selectedId).nonempty()) {
-    cy.getElementById(selectedId).select();
-    highlightIncident();
-  }
-}
-
-function runLayout(initial) {
-  const visible = cy.elements(":visible");
-  visible.layout({
-    name: "cose",
-    animate: !initial && visible.length < 400,
-    randomize: initial,
-    nodeRepulsion: () => 9000,
-    idealEdgeLength: () => 70,
-    padding: 30,
-  }).run();
+  applyFilters();
 }
 
 function applyFilters() {
   const exclude = new Set(excludeInput.value.split(",").map((t) => t.trim()).filter(Boolean));
   const depth = Number(depthSelect.value);
-  cy.batch(() => {
-    cy.elements().removeClass("hidden");
-    cy.nodes().forEach((n) => {
-      if (n.id() !== selectedId && n.data("tags").some((t) => exclude.has(t))) n.addClass("hidden");
-    });
-    if (depth > 0 && selectedId && cy.getElementById(selectedId).nonempty()) {
-      let hood = cy.getElementById(selectedId);
-      for (let i = 0; i < depth; i++) hood = hood.closedNeighborhood();
-      cy.nodes().difference(hood.nodes()).addClass("hidden");
+
+  let ids = new Set(
+    [...nodeById.values()]
+      .filter((n) => n.id === selectedId || !n.tags.some((t) => exclude.has(t)))
+      .map((n) => n.id),
+  );
+  if (depth > 0 && selectedId && nodeById.has(selectedId)) {
+    let frontier = new Set([selectedId]);
+    const reached = new Set(frontier);
+    for (let i = 0; i < depth; i++) {
+      const next = new Set();
+      for (const id of frontier) {
+        for (const nb of neighbours.get(id) || []) {
+          if (ids.has(nb) && !reached.has(nb)) { reached.add(nb); next.add(nb); }
+        }
+      }
+      frontier = next;
     }
-  });
+    ids = reached;
+  }
+  let shownLinks = links.filter((l) => ids.has(idOf(l.source)) && ids.has(idOf(l.target)));
+  if (hideOrphans.checked) {
+    const linked = new Set(shownLinks.flatMap((l) => [idOf(l.source), idOf(l.target)]));
+    ids = new Set([...ids].filter((id) => linked.has(id) || id === selectedId));
+  }
+
+  // Only hand the graph new data when the visible set really changed:
+  // every graphData call reheats the simulation and the layout jiggles.
+  const key = [...ids].sort().join(",");
+  if (key !== shownKey) {
+    shownKey = key;
+    shown = { nodes: [...ids].map((id) => nodeById.get(id)), links: shownLinks };
+    fg.graphData(shown);
+  }
   applySearch();
-  const shown = cy.nodes(":visible").length;
-  $("#stats").textContent = `${shown} of ${cy.nodes().length} notes`;
+  $("#stats").textContent = `${shown.nodes.length} of ${nodeById.size} notes`;
 }
 
 function applySearch() {
   const q = searchInput.value.trim().toLowerCase();
-  cy.batch(() => {
-    cy.elements().removeClass("faded match");
-    if (!q) return;
-    const hits = cy.nodes().filter((n) => {
-      const d = n.data();
-      return d.title.toLowerCase().includes(q) || d.id.includes(q) || d.aliases.some((a) => a.includes(q));
-    });
-    hits.addClass("match");
-    cy.elements().difference(hits).difference(hits.edgesWith(hits)).addClass("faded");
-  });
-}
-
-function highlightIncident() {
-  cy.edges().removeClass("incident");
-  if (selectedId) cy.getElementById(selectedId).connectedEdges().addClass("incident");
+  matches = q
+    ? new Set(
+        shown.nodes
+          .filter((n) => n.title.toLowerCase().includes(q) || n.id.includes(q) || n.aliases.some((a) => a.includes(q)))
+          .map((n) => n.id),
+      )
+    : null;
+  restyle();
 }
 
 function renderProblems() {
@@ -194,26 +247,33 @@ function renderProblems() {
     graph.problems.map((p) => `<li>${escapeHtml(p)}</li>`).join("")}</ul></details>`;
 }
 
+// Fly the camera to a node, once the simulation has given it a position.
+function flyTo(id, attempts = 20) {
+  const n = nodeById.get(id);
+  if (!n || n.x === undefined) {
+    if (attempts > 0) setTimeout(() => flyTo(id, attempts - 1), 150);
+    return;
+  }
+  const distance = 120;
+  const ratio = 1 + distance / (Math.hypot(n.x, n.y, n.z || 0) || 1);
+  fg.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: (n.z || 0) * ratio }, n, 1000);
+}
+
 // Select a note: load its panel, centre the graph on it, update the URL.
 async function focusNote(id, { push = true } = {}) {
   selectedId = id;
   if (push && location.pathname !== `/note/${id}`) history.pushState({ id }, "", `/note/${id}`);
-  const node = cy && cy.getElementById(id);
-  if (node && node.nonempty()) {
-    cy.nodes().unselect();
-    node.select();
+  if (fg && nodeById.has(id)) {
+    // The selection can change what is shown (n hops, or a hidden note
+    // that is now selected); applyFilters also restyles.
     applyFilters();
-    if (Number(depthSelect.value) > 0) runLayout(false);
-    cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1) }, { duration: 300 });
-    highlightIncident();
+    flyTo(id);
   }
   await loadPanel(id);
 }
 
 function clearSelection() {
   selectedId = null;
-  cy.nodes().unselect();
-  highlightIncident();
   applyFilters();
   history.pushState({}, "", "/");
 }
@@ -259,24 +319,24 @@ document.body.addEventListener("htmx:afterRequest", (evt) => {
 
 searchInput.addEventListener("input", applySearch);
 searchInput.addEventListener("keydown", (evt) => {
-  if (evt.key !== "Enter") return;
-  const hit = cy.nodes(".match:visible")[0];
-  if (hit) focusNote(hit.id());
+  if (evt.key !== "Enter" || !matches || !matches.size) return;
+  focusNote(matches.values().next().value);
 });
 colourBy.addEventListener("change", () => {
   assignSlots();
   renderLegend();
-  cy.nodes().forEach((n) => n.data("colour", colourFor(category(n.data()))));
+  restyle();
+  if (groupInput.checked) fg.d3ReheatSimulation();
 });
-depthSelect.addEventListener("change", () => { applyFilters(); runLayout(false); });
-excludeInput.addEventListener("change", () => { applyFilters(); runLayout(false); });
+groupInput.addEventListener("change", () => fg.d3ReheatSimulation());
+for (const el of [depthSelect, excludeInput, hideOrphans]) el.addEventListener("change", applyFilters);
 window.addEventListener("popstate", (evt) => {
   if (evt.state && evt.state.id) focusNote(evt.state.id, { push: false });
-  else if (cy) { selectedId = null; cy.nodes().unselect(); applyFilters(); }
+  else if (fg) { selectedId = null; applyFilters(); }
 });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  cy.style(style());
-  cy.nodes().forEach((n) => n.data("colour", colourFor(category(n.data()))));
+  fg.backgroundColor(css("--surface-1"));
+  restyle();
   renderLegend();
 });
 
