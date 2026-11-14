@@ -48,16 +48,39 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; }
 /* A 1px line with a 7px grab area. */
 #splitter { cursor: col-resize; touch-action: none; padding: 0 3px; background: var(--border); background-clip: content-box; }
 #splitter:hover, #splitter:focus-visible, #splitter.dragging { padding: 0 2px; background-color: var(--accent); outline: none; }
-#toolbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+/* Left column: the controls panel above the tabbed graph views. */
+#controls { flex: none; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+#toolbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 12px; color: var(--text-secondary); }
 #toolbar input, #toolbar select {
-  font: inherit; color: var(--text-primary); background: var(--surface-2);
+  font: inherit; color: var(--text-primary); background: var(--surface-1);
   border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px;
 }
 #search { width: 16em; }
 #stats { margin-left: auto; color: var(--text-muted); }
-#legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 6px 12px; color: var(--text-secondary); font-size: 12px; }
+#legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 12px 8px; color: var(--text-secondary); font-size: 12px; }
 #legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 5px; vertical-align: -1px; }
-#graph { flex: 1; min-height: 0; }
+/* While grouping, legend entries are buttons that collapse their group. */
+#legend button { font: inherit; color: inherit; background: none; border: 1px solid transparent; border-radius: 9px; padding: 0 6px; cursor: pointer; }
+#legend button:hover { border-color: var(--border); }
+#legend button[aria-pressed="true"] { border-color: var(--text-muted); background: var(--surface-1); font-weight: 600; }
+
+#views { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#view-tabs { flex: none; display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid var(--border); }
+#view-tabs button {
+  font: inherit; color: var(--text-secondary); background: none; cursor: pointer;
+  border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 4px 14px; margin-bottom: -1px;
+}
+#view-tabs button:hover { color: var(--text-primary); }
+#view-tabs button[aria-selected="true"] {
+  color: var(--text-primary); background: var(--surface-1); border-color: var(--border); font-weight: 600;
+}
+.graph { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+.graph[hidden] { display: none; }
+/* 3d-force-graph's hover tooltip. */
+.graph .scene-tooltip { padding: 0; background: none; }
+.node-tip { background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px; font: 13px/1.4 system-ui, sans-serif; }
+.node-tip span { color: var(--text-muted); font-size: 11px; }
 #problems { position: absolute; left: 12px; bottom: 12px; max-width: 60%; max-height: 30%; overflow: auto;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
 #problems summary { color: var(--critical); cursor: pointer; }

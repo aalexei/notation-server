@@ -14,7 +14,8 @@ uv run notation-server --dir ~/notation        # http://127.0.0.1:8765/
 ```
 
 Needs [uv](https://docs.astral.sh/uv/) and, for Org/Markdown rendering,
-`pandoc` on PATH. The page loads Cytoscape.js (with the fcose layout) and HTMX from unpkg.
+`pandoc` on PATH. The page loads Cytoscape.js (with the fcose layout),
+3d-force-graph (when the 3D tab is first opened) and HTMX from unpkg.
 
 ## From Emacs
 

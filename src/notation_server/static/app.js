@@ -1,14 +1,28 @@
-// Graph of notes (Cytoscape) + note panel (HTMX) + live updates (SSE).
+// Graph of notes in two views, 2D (Cytoscape) and 3D (3d-force-graph),
+// driven by the same controls + note panel (HTMX) + live updates (SSE).
+//
+// The controls build one model: which notes and edges exist (after
+// grouping), which are visible, and which match the search. Each view only
+// draws that model, so both always show the same data.
 "use strict";
 
 const cfg = JSON.parse(document.getElementById("config").textContent);
 const SLOTS = 8; // categorical colour slots; further categories fold into "other"
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const FORCE_GRAPH_URL = "https://unpkg.com/3d-force-graph@1.80.2/dist/3d-force-graph.min.js";
+const VIEW_KEY = "notation-server.view";
+const GROUP = "group:"; // id prefix of group boxes and collapsed groups
 
-let cy = null;
 let selectedId = null;
 let graph = { nodes: [], edges: [], problems: [] };
 let slotOf = new Map(); // category -> slot index, fixed from the whole corpus
+let collapsed = new Set(); // categories drawn as a single node while grouping
+
+// What the views draw. `nodes` are notes and collapsed groups; `groups` are
+// the boxes of expanded groups (only the 2D view draws those).
+let model = { nodes: [], groups: [], edges: [], byId: new Map(), neighbours: new Map() };
+let visible = new Set(); // ids of visible nodes and group boxes
+let matches = null; // ids matching the search, or null when not searching
 
 const $ = (sel) => document.querySelector(sel);
 const searchInput = $("#search");
@@ -21,10 +35,7 @@ const toInput = $("#to");
 const groupBox = $("#group");
 excludeInput.value = cfg.excludeTags.join(",");
 
-const GROUP = "group:"; // id prefix of group boxes and collapsed groups
-let collapsed = new Set(); // categories drawn as a single node while grouping
-const placed = new Set(); // ids that have been through a layout
-const lastPos = new Map(); // id -> position, kept across rebuilds
+const idOf = (end) => (typeof end === "object" ? end.id : end);
 
 function category(node) {
   if (colourBy.value === "subdir") return node.subdir || "(root)";
@@ -53,11 +64,20 @@ function colourFor(cat) {
   return slotOf.has(cat) ? css(`--series-${slotOf.get(cat) + 1}`) : css("--other");
 }
 
+function withAlpha(hex, alpha) {
+  const h = hex.replace("#", "");
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// While grouping, each legend entry is a button that collapses its group.
 function renderLegend() {
-  const items = [...slotOf.keys()].map(
-    (c) => `<span><span class="swatch" style="background:${colourFor(c)}"></span>${escapeHtml(c)}</span>`,
-  );
-  items.push(`<span><span class="swatch" style="background:${css("--other")}"></span>other</span>`);
+  const swatch = (colour) => `<span class="swatch" style="background:${colour}"></span>`;
+  const items = [...slotOf.keys()].map((c) => (groupBox.checked
+    ? `<button type="button" data-cat="${escapeHtml(c)}" aria-pressed="${collapsed.has(c)}"
+         title="Collapse or expand this group">${swatch(colourFor(c))}${escapeHtml(c)}</button>`
+    : `<span>${swatch(colourFor(c))}${escapeHtml(c)}</span>`));
+  items.push(`<span>${swatch(css("--other"))}other</span>`);
   $("#legend").innerHTML = items.join("");
 }
 
@@ -65,7 +85,158 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
-function style() {
+// The model.
+
+// One edge per linked pair: A->B and B->A become a single double-headed
+// edge, and links into a collapsed group become one edge with a count.
+function mergedEdges(links) {
+  const byPair = new Map();
+  for (const { source, target } of links) {
+    const key = `${source}>${target}`;
+    const reverse = byPair.get(`${target}>${source}`);
+    if (reverse) { reverse.both = true; reverse.count += 1; }
+    else if (byPair.has(key)) byPair.get(key).count += 1;
+    else byPair.set(key, { id: key, source, target, both: false, count: 1 });
+  }
+  return [...byPair.values()];
+}
+
+function buildModel() {
+  // The notes of a collapsed group are replaced by one node standing in for them.
+  const standIn = new Map();
+  const members = new Map();
+  for (const n of graph.nodes) {
+    const g = groupOf(n);
+    if (g === null || !collapsed.has(g)) continue;
+    standIn.set(n.id, GROUP + g);
+    if (!members.has(g)) members.set(g, []);
+    members.get(g).push(n);
+  }
+  const edges = mergedEdges(
+    graph.edges
+      .map((e) => ({ source: standIn.get(e.source) || e.source, target: standIn.get(e.target) || e.target }))
+      .filter((e) => e.source !== e.target),
+  );
+  const neighbours = new Map();
+  const link = (a, b) => {
+    if (!neighbours.has(a)) neighbours.set(a, new Set());
+    neighbours.get(a).add(b);
+  };
+  for (const e of edges) { link(e.source, e.target); link(e.target, e.source); }
+  const degree = (id) => (neighbours.get(id) || new Set()).size;
+
+  const cats = [...new Set(graph.nodes.map(groupOf))].filter((g) => g !== null);
+  const nodes = [
+    ...cats.filter((g) => members.has(g)).map((g) => ({
+      id: GROUP + g, cat: g, title: `${g} (${members.get(g).length})`, colour: colourFor(g),
+      tags: [], aliases: [], members: members.get(g), size: members.get(g).length, degree: degree(GROUP + g),
+    })),
+    ...graph.nodes.filter((n) => !standIn.has(n.id)).map((n) => ({
+      ...n, colour: colourFor(category(n)), degree: degree(n.id), groupCat: groupOf(n),
+    })),
+  ];
+  const groups = cats.filter((g) => !members.has(g))
+    .map((g) => ({ id: GROUP + g, cat: g, title: g, colour: colourFor(g) }));
+  model = { nodes, groups, edges, byId: new Map(nodes.map((n) => [n.id, n])), neighbours };
+}
+
+function noteFilter() {
+  const exclude = new Set(excludeInput.value.split(",").map((t) => t.trim()).filter(Boolean));
+  // Note ids start with their creation date, YYYYMMDD.
+  const from = fromInput.value.replaceAll("-", "");
+  const to = toInput.value.replaceAll("-", "");
+  return (d) => {
+    const day = d.id.slice(0, 8);
+    return !d.tags.some((t) => exclude.has(t)) && (!from || day >= from) && (!to || day <= to);
+  };
+}
+
+function computeVisibility() {
+  const passes = noteFilter();
+  // Inside a collapsed group, "unlinked" means no links at all.
+  const linked = new Set(graph.edges.flatMap((e) => [e.source, e.target]));
+  const memberShown = (m) => passes(m) && (!hideIsolated.checked || linked.has(m.id));
+  const depth = Number(depthSelect.value);
+
+  let shown = new Set(model.nodes
+    .filter((n) => n.id === selectedId || (n.members ? n.members.some(memberShown) : passes(n)))
+    .map((n) => n.id));
+  if (depth > 0 && model.byId.has(selectedId)) {
+    const hood = new Set([selectedId]);
+    for (let i = 0; i < depth; i++) {
+      for (const id of [...hood]) for (const nb of model.neighbours.get(id) || []) hood.add(nb);
+    }
+    shown = new Set([...shown].filter((id) => hood.has(id)));
+  }
+  // Judged after the other filters: a note linked only to hidden notes is unlinked too.
+  if (hideIsolated.checked) {
+    const before = shown;
+    shown = new Set([...before].filter((id) => id === selectedId
+      || [...(model.neighbours.get(id) || [])].some((nb) => before.has(nb))));
+  }
+  let count = 0;
+  for (const id of [...shown]) {
+    const n = model.byId.get(id);
+    count += n.members ? n.members.filter(memberShown).length : 1;
+    if (n.groupCat) shown.add(GROUP + n.groupCat); // its group box
+  }
+  visible = shown;
+  $("#stats").textContent = `${count} of ${graph.nodes.length} notes`;
+}
+
+function matchesQuery(d, q) {
+  if (d.members) return d.members.some((m) => matchesQuery(m, q));
+  return d.title.toLowerCase().includes(q) || d.id.includes(q) || d.aliases.some((a) => a.includes(q));
+}
+
+function computeMatches() {
+  const q = searchInput.value.trim().toLowerCase();
+  matches = q ? new Set(model.nodes.filter((n) => matchesQuery(n, q)).map((n) => n.id)) : null;
+}
+
+// Recompute the model and redraw. `structure`: the nodes or edges changed
+// (data, grouping, colours). `relayout`: true to re-run the layout from the
+// current positions, "fresh" to start over. Hidden views catch up when shown.
+function update({ structure = false, relayout = false } = {}) {
+  if (structure) buildModel();
+  computeVisibility();
+  computeMatches();
+  for (const [name, view] of Object.entries(views)) {
+    view.pending = mergeChanges(view.pending, { structure, relayout });
+    if (name === activeView && view.mounted) flush(view);
+  }
+}
+
+function mergeChanges(a, b) {
+  if (!a) return b;
+  const strength = (r) => ({ false: 0, true: 1, fresh: 2 })[String(r)];
+  return {
+    structure: a.structure || b.structure,
+    relayout: strength(a.relayout) >= strength(b.relayout) ? a.relayout : b.relayout,
+  };
+}
+
+function flush(view) {
+  const change = view.pending;
+  view.pending = null;
+  view.render(change || {});
+}
+
+function restyle() {
+  computeMatches();
+  const view = views[activeView];
+  if (view.mounted) view.restyle();
+}
+
+function toggleGroup(cat) {
+  if (!collapsed.delete(cat)) collapsed.add(cat);
+  renderLegend();
+  update({ structure: true, relayout: true });
+}
+
+// The 2D view.
+
+function cyStyle() {
   return [
     {
       selector: "node",
@@ -136,106 +307,6 @@ function style() {
   ];
 }
 
-// One edge per linked pair: A->B and B->A become a single double-headed
-// edge, and links into a collapsed group become one edge with a count.
-function mergedEdges(links) {
-  const byPair = new Map();
-  for (const { source, target } of links) {
-    const key = `${source}>${target}`;
-    const reverse = byPair.get(`${target}>${source}`);
-    if (reverse) { reverse.both = true; reverse.count += 1; }
-    else if (byPair.has(key)) byPair.get(key).count += 1;
-    else byPair.set(key, { id: key, source, target, both: false, count: 1 });
-  }
-  return [...byPair.values()];
-}
-
-function elements() {
-  // The notes of a collapsed group are replaced by one node standing in for them.
-  const standIn = new Map();
-  const members = new Map();
-  for (const n of graph.nodes) {
-    const g = groupOf(n);
-    if (g === null || !collapsed.has(g)) continue;
-    standIn.set(n.id, GROUP + g);
-    if (!members.has(g)) members.set(g, []);
-    members.get(g).push(n);
-  }
-  const edges = mergedEdges(
-    graph.edges
-      .map((e) => ({ source: standIn.get(e.source) || e.source, target: standIn.get(e.target) || e.target }))
-      .filter((e) => e.source !== e.target),
-  );
-  const degree = new Map();
-  for (const e of edges) {
-    degree.set(e.source, (degree.get(e.source) || 0) + 1);
-    degree.set(e.target, (degree.get(e.target) || 0) + 1);
-  }
-  const groups = [...new Set(graph.nodes.map(groupOf))].filter((g) => g !== null).map((g) => {
-    const data = { id: GROUP + g, cat: g, title: g, colour: colourFor(g), tags: [], aliases: [], degree: degree.get(GROUP + g) || 0 };
-    const ms = members.get(g);
-    if (!ms) return { group: "nodes", data, selectable: false };
-    return {
-      group: "nodes",
-      data: { ...data, title: `${g} (${ms.length})`, members: ms, size: ms.length },
-      classes: "collapsed",
-      selectable: false,
-    };
-  });
-  return [
-    ...groups,
-    ...graph.nodes.filter((n) => !standIn.has(n.id)).map((n) => {
-      const g = groupOf(n);
-      const data = { ...n, colour: colourFor(category(n)), degree: degree.get(n.id) || 0 };
-      return { group: "nodes", data: g === null ? data : { ...data, parent: GROUP + g } };
-    }),
-    ...edges.map((e) => ({ group: "edges", data: e })),
-  ];
-}
-
-async function loadGraph() {
-  // Fetch everything and filter client-side, so colours stay stable.
-  const res = await fetch("/api/graph?exclude_tags=");
-  graph = await res.json();
-  assignSlots();
-  renderLegend();
-  renderProblems();
-
-  if (!cy) {
-    cy = cytoscape({ container: $("#graph"), elements: elements(), style: style(), wheelSensitivity: 0.3 });
-    cy.on("tap", "node", (evt) => {
-      const n = evt.target;
-      if (n.hasClass("collapsed")) toggleGroup(n.data("cat"));
-      else if (!n.isParent()) focusNote(n.id());
-    });
-    cy.on("dbltap", "node", (evt) => { if (evt.target.isParent()) toggleGroup(evt.target.data("cat")); });
-    cy.on("tap", (evt) => { if (evt.target === cy) clearSelection(); });
-    applyFilters();
-    runLayout(true);
-    reselect();
-  } else {
-    rebuild(false);
-  }
-}
-
-// Replace the graph's elements, keeping every note where it was. A
-// relayout of "fresh" starts over, for when the grouping changes.
-function rebuild(relayout) {
-  cy.nodes(":childless").forEach((n) => { if (placed.has(n.id())) lastPos.set(n.id(), { ...n.position() }); });
-  cy.elements().remove();
-  cy.add(elements());
-  cy.nodes(":childless").forEach((n) => {
-    const members = n.data("members");
-    const at = members ? centroid(members.map((m) => lastPos.get(m.id)).filter(Boolean)) : lastPos.get(n.id());
-    if (!at) return;
-    n.position(at);
-    placed.add(n.id());
-  });
-  applyFilters();
-  if (relayout || cy.nodes(":childless:visible").some((n) => !placed.has(n.id()))) runLayout(relayout === "fresh");
-  reselect();
-}
-
 function centroid(points) {
   if (!points.length) return null;
   return {
@@ -244,118 +315,386 @@ function centroid(points) {
   };
 }
 
-function reselect() {
-  if (selectedId && cy.getElementById(selectedId).nonempty()) {
-    cy.getElementById(selectedId).select();
-    highlightIncident();
-  }
-}
+const cyView = {
+  el: $("#graph-2d"),
+  cy: null,
+  pending: null,
+  placed: new Set(), // ids that have been through a layout
+  lastPos: new Map(), // id -> position, kept across rebuilds
 
-function toggleGroup(cat) {
-  if (!collapsed.delete(cat)) collapsed.add(cat);
-  rebuild(true);
-}
+  get mounted() { return this.cy !== null; },
 
-function runLayout(initial) {
-  const visible = cy.elements(":visible");
-  const notes = visible.nodes(":childless");
-  const known = notes.filter((n) => placed.has(n.id()));
-  const randomize = initial || known.empty();
-  if (!randomize) {
-    // Notes shown for the first time start next to a neighbour, not piled at the origin.
-    const box = known.boundingBox();
-    notes.difference(known).forEach((n) => {
-      const anchor = n.neighborhood().nodes().intersection(known)[0];
-      const at = anchor ? anchor.position() : { x: box.x1 + Math.random() * box.w, y: box.y1 + Math.random() * box.h };
-      n.position({ x: at.x + Math.random() * 40 - 20, y: at.y + Math.random() * 40 - 20 });
+  async mount() {
+    const cy = (this.cy = cytoscape({
+      container: this.el, elements: this.elements(), style: cyStyle(), wheelSensitivity: 0.3,
+    }));
+    cy.on("tap", "node", (evt) => {
+      const n = evt.target;
+      if (n.hasClass("collapsed")) toggleGroup(n.data("cat"));
+      else if (!n.isParent()) focusNote(n.id());
     });
-  }
-  notes.forEach((n) => placed.add(n.id()));
-  visible.layout({
-    name: "fcose",
-    randomize,
-    animate: !randomize && visible.length < 1500,
-    animationDuration: 400,
-    nodeRepulsion: 6000,
-    idealEdgeLength: 60,
-    nodeSeparation: 60,
-    padding: 30,
-  }).run();
-}
+    cy.on("dbltap", "node", (evt) => { if (evt.target.isParent()) toggleGroup(evt.target.data("cat")); });
+    cy.on("tap", (evt) => { if (evt.target === cy) clearSelection(); });
+    // Cytoscape only notices window resizes by itself.
+    new ResizeObserver(() => cy.resize()).observe(this.el);
+    this.applyVisibility();
+    this.runLayout(true);
+    this.restyle();
+  },
 
-function noteFilter() {
-  const exclude = new Set(excludeInput.value.split(",").map((t) => t.trim()).filter(Boolean));
-  // Note ids start with their creation date, YYYYMMDD.
-  const from = fromInput.value.replaceAll("-", "");
-  const to = toInput.value.replaceAll("-", "");
-  return (d) => {
-    const day = d.id.slice(0, 8);
-    return !d.tags.some((t) => exclude.has(t)) && (!from || day >= from) && (!to || day <= to);
-  };
-}
+  elements() {
+    return [
+      ...model.groups.map((g) => ({
+        group: "nodes", data: { ...g, tags: [], aliases: [], degree: 0 }, selectable: false,
+      })),
+      ...model.nodes.map((n) => {
+        if (n.members) return { group: "nodes", data: n, classes: "collapsed", selectable: false };
+        return { group: "nodes", data: n.groupCat ? { ...n, parent: GROUP + n.groupCat } : n };
+      }),
+      ...model.edges.map((e) => ({ group: "edges", data: e })),
+    ];
+  },
 
-function applyFilters() {
-  const passes = noteFilter();
-  // Inside a collapsed group, "unlinked" means no links at all.
-  const linked = new Set(graph.edges.flatMap((e) => [e.source, e.target]));
-  const memberShown = (m) => passes(m) && (!hideIsolated.checked || linked.has(m.id));
-  const depth = Number(depthSelect.value);
-  // Notes and collapsed groups; group boxes follow their contents.
-  const notes = cy.nodes(":childless");
-  cy.batch(() => {
-    cy.elements().removeClass("hidden");
-    notes.forEach((n) => {
-      const d = n.data();
-      const shown = d.members ? d.members.some(memberShown) : passes(d);
-      if (!shown && n.id() !== selectedId) n.addClass("hidden");
+  render({ structure = false, relayout = false }) {
+    const cy = this.cy;
+    if (structure) {
+      // Replace the elements, keeping every note where it was.
+      cy.nodes(":childless").forEach((n) => {
+        if (this.placed.has(n.id())) this.lastPos.set(n.id(), { ...n.position() });
+      });
+      cy.elements().remove();
+      cy.add(this.elements());
+      cy.nodes(":childless").forEach((n) => {
+        const members = n.data("members");
+        const at = members
+          ? centroid(members.map((m) => this.lastPos.get(m.id)).filter(Boolean))
+          : this.lastPos.get(n.id());
+        if (!at) return;
+        n.position(at);
+        this.placed.add(n.id());
+      });
+    }
+    this.applyVisibility();
+    if (relayout || cy.nodes(":childless:visible").some((n) => !this.placed.has(n.id()))) {
+      this.runLayout(relayout === "fresh");
+    }
+    this.restyle();
+  },
+
+  applyVisibility() {
+    this.cy.batch(() => this.cy.nodes().forEach((n) => { n.toggleClass("hidden", !visible.has(n.id())); }));
+  },
+
+  runLayout(initial) {
+    const visibleEls = this.cy.elements(":visible");
+    const notes = visibleEls.nodes(":childless");
+    const known = notes.filter((n) => this.placed.has(n.id()));
+    const randomize = initial || known.empty();
+    if (!randomize) {
+      // Notes shown for the first time start next to a neighbour, not piled at the origin.
+      const box = known.boundingBox();
+      notes.difference(known).forEach((n) => {
+        const anchor = n.neighborhood().nodes().intersection(known)[0];
+        const at = anchor ? anchor.position() : { x: box.x1 + Math.random() * box.w, y: box.y1 + Math.random() * box.h };
+        n.position({ x: at.x + Math.random() * 40 - 20, y: at.y + Math.random() * 40 - 20 });
+      });
+    }
+    notes.forEach((n) => this.placed.add(n.id()));
+    visibleEls.layout({
+      name: "fcose",
+      randomize,
+      animate: !randomize && visibleEls.length < 1500,
+      animationDuration: 400,
+      nodeRepulsion: 6000,
+      idealEdgeLength: 60,
+      nodeSeparation: 60,
+      padding: 30,
+    }).run();
+  },
+
+  // Search, selection and the selected note's edges.
+  restyle() {
+    const cy = this.cy;
+    cy.batch(() => {
+      cy.elements().removeClass("faded match incident");
+      cy.nodes().unselect();
+      if (matches) {
+        const hits = cy.nodes(":childless").filter((n) => matches.has(n.id()));
+        hits.addClass("match");
+        // Fading a group box would fade the matches inside it too.
+        cy.elements().not(":parent").difference(hits).difference(hits.edgesWith(hits)).addClass("faded");
+      }
+      const node = selectedId && cy.getElementById(selectedId);
+      if (node && node.nonempty()) {
+        node.select();
+        node.connectedEdges().addClass("incident");
+      }
     });
-    if (depth > 0 && selectedId && cy.getElementById(selectedId).nonempty()) {
-      let hood = cy.getElementById(selectedId);
-      for (let i = 0; i < depth; i++) hood = hood.closedNeighborhood();
-      notes.difference(hood.nodes()).addClass("hidden");
+  },
+
+  focus(id) {
+    const node = this.cy.getElementById(id);
+    if (node.nonempty() && visible.has(id)) {
+      this.cy.animate({ center: { eles: node }, zoom: Math.max(this.cy.zoom(), 1) }, { duration: 300 });
     }
-    // Judged after the other filters: a note linked only to hidden notes is unlinked too.
-    if (hideIsolated.checked) {
-      notes
-        .filter((n) => !n.hasClass("hidden") && n.id() !== selectedId
-          && n.neighborhood().nodes().not(".hidden").empty())
-        .addClass("hidden");
+  },
+
+  show() { this.cy.resize(); },
+  hide() {},
+  theme() { this.cy.style(cyStyle()); },
+};
+
+// The 3D view.
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`could not load ${src}`));
+    document.head.append(s);
+  });
+}
+
+// Pull the notes of each group towards the group's centroid while
+// grouping, so each tag (or folder) forms its own region.
+function clusterForce() {
+  let nodes = [];
+  function force(alpha) {
+    if (!groupBox.checked) return;
+    const centres = new Map();
+    for (const n of nodes) {
+      if (!n.groupCat) continue;
+      let c = centres.get(n.groupCat);
+      if (!c) centres.set(n.groupCat, (c = { x: 0, y: 0, z: 0, count: 0 }));
+      c.x += n.x; c.y += n.y; c.z += n.z || 0; c.count++;
     }
-    cy.nodes(":parent").filter((p) => p.children().not(".hidden").empty()).addClass("hidden");
-  });
-  applySearch();
-  let shown = 0;
-  notes.not(".hidden").forEach((n) => {
-    const members = n.data("members");
-    shown += members ? members.filter(memberShown).length : 1;
-  });
-  $("#stats").textContent = `${shown} of ${graph.nodes.length} notes`;
+    const k = alpha * 0.25;
+    for (const n of nodes) {
+      const c = n.groupCat && centres.get(n.groupCat);
+      if (!c || c.count < 2) continue;
+      n.vx += (c.x / c.count - n.x) * k;
+      n.vy += (c.y / c.count - n.y) * k;
+      n.vz += (c.z / c.count - (n.z || 0)) * k;
+    }
+  }
+  force.initialize = (ns) => { nodes = ns; };
+  return force;
 }
 
-function matches(d, q) {
-  if (d.members) return d.members.some((m) => matches(m, q));
-  return d.title.toLowerCase().includes(q) || d.id.includes(q) || d.aliases.some((a) => a.includes(q));
+function centroid3(points) {
+  const known = points.filter((p) => p && p.x !== undefined);
+  if (!known.length) return null;
+  const mean = (k) => known.reduce((s, p) => s + (p[k] || 0), 0) / known.length;
+  return { x: mean("x"), y: mean("y"), z: mean("z") };
 }
 
-function applySearch() {
-  const q = searchInput.value.trim().toLowerCase();
-  cy.batch(() => {
-    cy.elements().removeClass("faded match");
-    if (!q) return;
-    const hits = cy.nodes(":childless").filter((n) => matches(n.data(), q));
-    hits.addClass("match");
-    // Fading a group box would fade the matches inside it too.
-    cy.elements().not(":parent").difference(hits).difference(hits.edgesWith(hits)).addClass("faded");
-  });
+const fgView = {
+  el: $("#graph-3d"),
+  fg: null,
+  mounting: null,
+  pending: null,
+  hoverId: null,
+  framed: false,
+  // Node objects persist across updates, so the simulation keeps their
+  // positions instead of starting over.
+  nodeById: new Map(),
+  lastPos: new Map(), // positions of notes folded into a collapsed group
+  links: [],
+  shownKey: "",
+
+  get mounted() { return this.fg !== null; },
+
+  mount() {
+    this.mounting ||= this.load();
+    return this.mounting;
+  },
+
+  async load() {
+    try {
+      if (typeof ForceGraph3D === "undefined") await loadScript(FORCE_GRAPH_URL);
+    } catch (e) {
+      this.el.innerHTML = `<p class="notice">The 3D view is unavailable: ${escapeHtml(e.message)}</p>`;
+      this.mounting = null;
+      return;
+    }
+    const el = this.el;
+    const fg = ForceGraph3D()(el)
+      .backgroundColor(css("--surface-1"))
+      .showNavInfo(false)
+      .nodeId("id")
+      .nodeLabel((n) => `<div class="node-tip">${escapeHtml(n.title)}<br><span>${n.members
+        ? "group · click to expand"
+        : n.id + (n.tags.length ? " · " + escapeHtml(n.tags.join(" ")) : "")}</span></div>`)
+      .nodeVal((n) => (n.members ? 4 + n.size / 2 : 1 + n.degree))
+      .nodeRelSize(3)
+      .nodeOpacity(0.95)
+      .nodeColor((n) => this.nodeColour(n))
+      .linkColor((l) => this.linkColour(l))
+      .linkWidth((l) => (this.incident(l) ? 1.2 : l.count > 1 ? Math.min(l.count, 10) * 0.3 : 0))
+      // One arrowhead per link only; two-way links get none.
+      .linkDirectionalArrowLength((l) => (l.both ? 0 : 2.5))
+      .linkDirectionalArrowRelPos(1)
+      .onNodeClick((n) => (n.members ? toggleGroup(n.cat) : focusNote(n.id)))
+      .onNodeHover((n) => {
+        this.hoverId = n ? n.id : null;
+        el.style.cursor = n ? "pointer" : "";
+        this.restyle();
+      })
+      .onBackgroundClick(() => clearSelection())
+      // Frame the whole graph once the first layout settles, unless a note is in focus.
+      .onEngineStop(() => {
+        if (this.framed) return;
+        this.framed = true;
+        if (!selectedId) fg.zoomToFit(600, 20);
+      });
+    fg.d3Force("charge").strength(-40);
+    fg.d3Force("link").distance(30);
+    fg.d3Force("cluster", clusterForce());
+    new ResizeObserver(() => {
+      if (el.clientWidth && el.clientHeight) fg.width(el.clientWidth).height(el.clientHeight);
+    }).observe(el);
+    this.fg = fg;
+    this.render({ structure: true });
+  },
+
+  sync() {
+    const fresh = new Set(model.nodes.map((n) => n.id));
+    for (const [id, n] of this.nodeById) {
+      if (fresh.has(id)) continue;
+      if (n.x !== undefined) this.lastPos.set(id, { x: n.x, y: n.y, z: n.z });
+      this.nodeById.delete(id);
+    }
+    for (const n of model.nodes) {
+      const existing = this.nodeById.get(n.id);
+      if (existing) { Object.assign(existing, n); continue; }
+      const node = { ...n };
+      // A collapsed group starts where its notes were; a re-shown note where it was.
+      const at = n.members
+        ? centroid3(n.members.map((m) => this.nodeById.get(m.id) || this.lastPos.get(m.id)))
+        : this.lastPos.get(n.id);
+      if (at) Object.assign(node, at);
+      this.nodeById.set(n.id, node);
+    }
+    this.links = model.edges.map((e) => ({ ...e }));
+    this.shownKey = ""; // links are new objects, so they must be handed over
+  },
+
+  render({ structure = false, relayout = false }) {
+    if (structure) this.sync();
+    const ids = model.nodes.filter((n) => visible.has(n.id)).map((n) => n.id);
+    const key = ids.join(",");
+    if (key !== this.shownKey) {
+      // Every graphData call reheats the simulation, so only when needed.
+      this.shownKey = key;
+      this.fg.graphData({
+        nodes: ids.map((id) => this.nodeById.get(id)),
+        links: this.links.filter((l) => visible.has(idOf(l.source)) && visible.has(idOf(l.target))),
+      });
+    } else if (relayout) {
+      this.fg.d3ReheatSimulation();
+    }
+    this.restyle();
+  },
+
+  // A selected note keeps its neighbours at full strength and fades the
+  // rest; a search fades everything that doesn't match.
+  emphasised(id) {
+    if (matches) return matches.has(id);
+    if (!selectedId) return true;
+    return id === selectedId || (model.neighbours.get(selectedId) || new Set()).has(id);
+  },
+
+  nodeColour(n) {
+    if (n.id === selectedId || n.id === this.hoverId) return css("--text-primary");
+    return this.emphasised(n.id) ? n.colour : withAlpha(n.colour, 0.12);
+  },
+
+  incident(l) {
+    return selectedId && (idOf(l.source) === selectedId || idOf(l.target) === selectedId);
+  },
+
+  linkColour(l) {
+    if (this.incident(l)) return css("--text-secondary");
+    return withAlpha(css("--edge"), matches || selectedId ? 0.08 : 0.5);
+  },
+
+  restyle() {
+    const fg = this.fg;
+    fg.nodeColor(fg.nodeColor()).linkColor(fg.linkColor()).linkWidth(fg.linkWidth());
+  },
+
+  // Fly the camera to a node, once the simulation has given it a position.
+  focus(id, attempts = 20) {
+    const n = this.nodeById.get(id);
+    if (!n || !visible.has(id)) return;
+    if (n.x === undefined) {
+      if (attempts > 0) setTimeout(() => this.focus(id, attempts - 1), 150);
+      return;
+    }
+    const ratio = 1 + 120 / (Math.hypot(n.x, n.y, n.z || 0) || 1);
+    this.fg.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: (n.z || 0) * ratio }, n, 1000);
+  },
+
+  show() { this.fg.resumeAnimation(); },
+  hide() { this.fg.pauseAnimation(); },
+  theme() {
+    this.fg.backgroundColor(css("--surface-1"));
+    this.restyle();
+  },
+};
+
+// Tabs.
+
+const views = { "2d": cyView, "3d": fgView };
+let activeView = views[localStorage.getItem(VIEW_KEY)] ? localStorage.getItem(VIEW_KEY) : "2d";
+
+async function showView(name) {
+  activeView = name;
+  localStorage.setItem(VIEW_KEY, name);
+  for (const tab of document.querySelectorAll("#view-tabs [role=tab]")) {
+    const selected = tab.dataset.view === name;
+    tab.setAttribute("aria-selected", selected);
+    tab.tabIndex = selected ? 0 : -1;
+  }
+  for (const [other, view] of Object.entries(views)) {
+    view.el.hidden = other !== name;
+    if (other !== name && view.mounted) view.hide();
+  }
+  const view = views[name];
+  if (!view.mounted) {
+    view.pending = null; // mounting draws the current model
+    await view.mount();
+    if (activeView !== name || !view.mounted) return;
+  } else {
+    view.show();
+    flush(view);
+  }
+  if (selectedId) view.focus(selectedId);
 }
 
-function recolour() {
-  cy.nodes().forEach((n) => n.data("colour", colourFor(n.data("cat") ?? category(n.data()))));
-}
+$("#view-tabs").addEventListener("click", (evt) => {
+  const tab = evt.target.closest("[role=tab]");
+  if (tab && tab.dataset.view !== activeView) showView(tab.dataset.view);
+});
+$("#view-tabs").addEventListener("keydown", (evt) => {
+  if (evt.key !== "ArrowLeft" && evt.key !== "ArrowRight") return;
+  const tabs = [...document.querySelectorAll("#view-tabs [role=tab]")];
+  const next = tabs[(tabs.findIndex((t) => t.dataset.view === activeView) + 1) % tabs.length];
+  next.focus();
+  showView(next.dataset.view);
+});
 
-function highlightIncident() {
-  cy.edges().removeClass("incident");
-  if (selectedId) cy.getElementById(selectedId).connectedEdges().addClass("incident");
+// Data, selection and the note panel.
+
+async function loadGraph() {
+  // Fetch everything and filter client-side, so colours stay stable.
+  const res = await fetch("/api/graph?exclude_tags=");
+  graph = await res.json();
+  assignSlots();
+  renderLegend();
+  renderProblems();
+  update({ structure: true });
 }
 
 function renderProblems() {
@@ -370,25 +709,19 @@ function renderProblems() {
 async function focusNote(id, { push = true } = {}) {
   selectedId = id;
   if (push && location.pathname !== `/note/${id}`) history.pushState({ id }, "", `/note/${id}`);
+  // Opening a note inside a collapsed group expands the group.
   const note = graph.nodes.find((n) => n.id === id);
-  if (cy && note && collapsed.delete(groupOf(note))) rebuild(true);
-  const node = cy && cy.getElementById(id);
-  if (node && node.nonempty()) {
-    cy.nodes().unselect();
-    node.select();
-    applyFilters();
-    if (Number(depthSelect.value) > 0) runLayout(false);
-    cy.animate({ center: { eles: node }, zoom: Math.max(cy.zoom(), 1) }, { duration: 300 });
-    highlightIncident();
-  }
+  const expand = Boolean(note && collapsed.delete(groupOf(note)));
+  if (expand) renderLegend();
+  update({ structure: expand, relayout: expand || Number(depthSelect.value) > 0 });
+  const view = views[activeView];
+  if (view.mounted) view.focus(id);
   await loadPanel(id);
 }
 
 function clearSelection() {
   selectedId = null;
-  cy.nodes().unselect();
-  highlightIncident();
-  applyFilters();
+  update();
   history.pushState({}, "", "/");
 }
 
@@ -450,8 +783,6 @@ splitter.addEventListener("dblclick", () => {
   $("main").style.removeProperty("--panel-width");
   localStorage.removeItem(PANEL_WIDTH_KEY);
 });
-// Cytoscape only notices window resizes by itself.
-new ResizeObserver(() => { if (cy) cy.resize(); }).observe($("#graph"));
 
 // notation: links inside a rendered note open in the panel, not a new page.
 $("#panel").addEventListener("click", (evt) => {
@@ -479,33 +810,41 @@ document.body.addEventListener("htmx:afterRequest", (evt) => {
   }
 });
 
-searchInput.addEventListener("input", applySearch);
+// Controls.
+
+searchInput.addEventListener("input", restyle);
 searchInput.addEventListener("keydown", (evt) => {
-  if (evt.key !== "Enter") return;
-  const hit = cy.nodes(".match:visible")[0];
+  if (evt.key !== "Enter" || !matches) return;
+  const hit = model.nodes.find((n) => matches.has(n.id) && visible.has(n.id));
   if (!hit) return;
-  const members = hit.data("members");
   const q = searchInput.value.trim().toLowerCase();
-  focusNote(members ? members.find((m) => matches(m, q)).id : hit.id());
+  focusNote(hit.members ? hit.members.find((m) => matchesQuery(m, q)).id : hit.id);
 });
 colourBy.addEventListener("change", () => {
   assignSlots();
+  collapsed.clear();
   renderLegend();
-  if (groupBox.checked) { collapsed.clear(); rebuild("fresh"); }
-  else recolour();
+  update({ structure: true, relayout: groupBox.checked && "fresh" });
 });
-groupBox.addEventListener("change", () => rebuild("fresh"));
+groupBox.addEventListener("change", () => {
+  renderLegend();
+  update({ structure: true, relayout: "fresh" });
+});
+$("#legend").addEventListener("click", (evt) => {
+  const button = evt.target.closest("button[data-cat]");
+  if (button) toggleGroup(button.dataset.cat);
+});
 for (const input of [depthSelect, excludeInput, hideIsolated, fromInput, toInput]) {
-  input.addEventListener("change", () => { applyFilters(); runLayout(false); });
+  input.addEventListener("change", () => update({ relayout: true }));
 }
 window.addEventListener("popstate", (evt) => {
   if (evt.state && evt.state.id) focusNote(evt.state.id, { push: false });
-  else if (cy) { selectedId = null; cy.nodes().unselect(); applyFilters(); }
+  else { selectedId = null; update(); }
 });
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  cy.style(style());
-  recolour();
   renderLegend();
+  update({ structure: true }); // node colours come from the theme
+  for (const view of Object.values(views)) if (view.mounted) view.theme();
 });
 
 function connectEvents() {
@@ -519,6 +858,7 @@ function connectEvents() {
 
 (async () => {
   await loadGraph();
+  await showView(activeView);
   connectEvents();
   if (cfg.initialId) {
     history.replaceState({ id: cfg.initialId }, "", `/note/${cfg.initialId}`);

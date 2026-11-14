@@ -11,37 +11,48 @@
   <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
   <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
   <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+  <!-- 3d-force-graph is loaded by app.js when the 3D tab is first opened. -->
   <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body hx-headers='{"{{ token_header }}": "{{ token }}"}'>
   <main>
     <section id="graph-pane">
-      <div id="toolbar">
-        <input id="search" type="search" placeholder="Search titles, aliases, ids…" autocomplete="off">
-        <label>Colour by
-          <select id="colour-by">
-            <option value="tag">tag</option>
-            <option value="subdir">folder</option>
-          </select>
-        </label>
-        <label>Show
-          <select id="depth">
-            <option value="0">all notes</option>
-            <option value="1">1 hop</option>
-            <option value="2">2 hops</option>
-            <option value="3">3 hops</option>
-          </select>
-        </label>
-        <label>Hide tags <input id="exclude-tags" type="text" size="10"></label>
-        <label>Created <input id="from" type="date" aria-label="Created from"> – <input id="to" type="date" aria-label="Created to"></label>
-        <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
-        <label title="Double-click a group to collapse it; click a collapsed group to expand it"><input id="group" type="checkbox"> Group by colour</label>
-        <span id="stats"></span>
+      <div id="controls">
+        <div id="toolbar">
+          <input id="search" type="search" placeholder="Search titles, aliases, ids…" autocomplete="off">
+          <label>Colour by
+            <select id="colour-by">
+              <option value="tag">tag</option>
+              <option value="subdir">folder</option>
+            </select>
+          </label>
+          <label>Show
+            <select id="depth">
+              <option value="0">all notes</option>
+              <option value="1">1 hop</option>
+              <option value="2">2 hops</option>
+              <option value="3">3 hops</option>
+            </select>
+          </label>
+          <label>Hide tags <input id="exclude-tags" type="text" size="10"></label>
+          <label>Created <input id="from" type="date" aria-label="Created from"> – <input id="to" type="date" aria-label="Created to"></label>
+          <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
+          <label title="Click a legend entry to collapse or expand its group"><input id="group" type="checkbox"> Group by colour</label>
+          <span id="stats"></span>
+        </div>
+        <div id="legend" aria-label="Colour legend"></div>
       </div>
-      <div id="legend" aria-label="Colour legend"></div>
-      <div id="graph" role="img" aria-label="Graph of linked notes"></div>
-      <div id="problems" hidden></div>
+      <div id="views">
+        <div id="view-tabs" role="tablist" aria-label="Graph view">
+          <button type="button" role="tab" id="tab-2d" aria-controls="graph-2d" data-view="2d">2D</button>
+          <button type="button" role="tab" id="tab-3d" aria-controls="graph-3d" data-view="3d">3D</button>
+        </div>
+        <div id="graph-2d" class="graph" role="tabpanel" aria-labelledby="tab-2d"></div>
+        <div id="graph-3d" class="graph" role="tabpanel" aria-labelledby="tab-3d"
+             title="Drag to rotate, scroll to zoom, right-drag to pan" hidden></div>
+        <div id="problems" hidden></div>
+      </div>
     </section>
     <div id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize note panel" tabindex="0"></div>
     <aside id="panel">
