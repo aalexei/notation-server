@@ -39,12 +39,15 @@ body {
   background: var(--surface-1);
   color: var(--text-primary);
 }
-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 44%); height: 100vh; }
+main { display: grid; grid-template-columns: minmax(0, 1fr) 7px var(--panel-width, minmax(360px, 44%)); height: 100vh; }
 .muted { color: var(--text-muted); }
 a { color: var(--accent); }
 code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; }
 
-#graph-pane { position: relative; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+#graph-pane { position: relative; display: flex; flex-direction: column; min-width: 0; }
+/* A 1px line with a 7px grab area. */
+#splitter { cursor: col-resize; touch-action: none; padding: 0 3px; background: var(--border); background-clip: content-box; }
+#splitter:hover, #splitter:focus-visible, #splitter.dragging { padding: 0 2px; background-color: var(--accent); outline: none; }
 #toolbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
 #toolbar input, #toolbar select {
   font: inherit; color: var(--text-primary); background: var(--surface-2);

@@ -412,6 +412,47 @@ function toast(msg) {
   toast.timer = setTimeout(() => { t.hidden = true; }, 4000);
 }
 
+// Draggable divider between the graph and the panel; the width is remembered.
+const splitter = $("#splitter");
+const PANEL_WIDTH_KEY = "notation-server.panelWidth";
+
+function setPanelWidth(px) {
+  const main = $("main");
+  const width = Math.round(Math.min(Math.max(px, 280), main.clientWidth - 280));
+  main.style.setProperty("--panel-width", `${width}px`);
+  return width;
+}
+
+const savedWidth = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+if (savedWidth) setPanelWidth(savedWidth);
+
+splitter.addEventListener("pointerdown", (evt) => {
+  evt.preventDefault(); // no text selection while dragging
+  // Capture keeps the drag going over the panel's PDF iframes.
+  splitter.setPointerCapture(evt.pointerId);
+  splitter.classList.add("dragging");
+});
+splitter.addEventListener("pointermove", (evt) => {
+  if (!splitter.hasPointerCapture(evt.pointerId)) return;
+  setPanelWidth($("main").getBoundingClientRect().right - evt.clientX);
+});
+splitter.addEventListener("lostpointercapture", () => {
+  splitter.classList.remove("dragging");
+  localStorage.setItem(PANEL_WIDTH_KEY, $("#panel").offsetWidth);
+});
+splitter.addEventListener("keydown", (evt) => {
+  const step = { ArrowLeft: 40, ArrowRight: -40 }[evt.key];
+  if (!step) return;
+  evt.preventDefault();
+  localStorage.setItem(PANEL_WIDTH_KEY, setPanelWidth($("#panel").offsetWidth + step));
+});
+splitter.addEventListener("dblclick", () => {
+  $("main").style.removeProperty("--panel-width");
+  localStorage.removeItem(PANEL_WIDTH_KEY);
+});
+// Cytoscape only notices window resizes by itself.
+new ResizeObserver(() => { if (cy) cy.resize(); }).observe($("#graph"));
+
 // notation: links inside a rendered note open in the panel, not a new page.
 $("#panel").addEventListener("click", (evt) => {
   const a = evt.target.closest("a[data-note-id]");
