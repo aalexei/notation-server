@@ -461,6 +461,13 @@ $("#panel").addEventListener("click", (evt) => {
   focusNote(a.dataset.noteId);
 });
 
+$("#panel").addEventListener("click", (evt) => {
+  const button = evt.target.closest("[data-fold]");
+  if (!button) return;
+  const open = button.dataset.fold === "open";
+  for (const d of $("#panel").querySelectorAll("details.section:not(.empty)")) d.open = open;
+});
+
 document.body.addEventListener("htmx:afterRequest", (evt) => {
   const xhr = evt.detail.xhr;
   if (evt.detail.requestConfig.verb !== "post") return;

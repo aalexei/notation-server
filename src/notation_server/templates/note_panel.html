@@ -20,6 +20,12 @@
         <button hx-post="/api/notes/{{ note.id }}/edit" hx-swap="none">Edit in Emacs</button>
       {% endif %}
       <a href="/files/{{ note.id }}/{{ main_file | urlencode }}" target="_blank" rel="noopener">Open file</a>
+      {% if view.kind == "html" and '<details class="section' in view.html %}
+        <span class="fold-all">
+          <button type="button" data-fold="open">Expand all</button>
+          <button type="button" data-fold="close">Collapse all</button>
+        </span>
+      {% endif %}
     </div>
   </header>
 

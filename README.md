@@ -28,6 +28,10 @@ Needs [uv](https://docs.astral.sh/uv/) and, for Org/Markdown rendering,
 - `M-x notation-server-browse`: show the current note in the open tab
 - `M-x notation-server-follow-mode`: keep the graph on the note you're visiting
 
+`notation-server-start` passes your `org-todo-keywords` along, so Org
+headings show your own keywords. Without Emacs, give each sequence with
+`--todo-keywords "TODO NEXT | DONE"`.
+
 ## Tracking notation.el
 
 `src/notation_server/index.py` re-implements notation.el's conventions in

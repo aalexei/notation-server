@@ -70,9 +70,10 @@
 (defcustom notation-server-command
   (list "uv" "run" "--project" notation-server--source-dir "notation-server")
   "Command list that launches the server.
-`notation-server-start' appends --dir, --host, --port and the
-emacsclient options to it. The default runs the server from this
-repository's checkout. After \"uv tool install <this repo>\", set it to
+`notation-server-start' appends --dir, --host, --port, your
+`org-todo-keywords' and the emacsclient options to it. The default
+runs the server from this repository's checkout. After \"uv tool
+install <this repo>\", set it to
 \\='(\"notation-server\") to use the installed command instead."
   :type '(repeat string)
   :group 'notation-server)
@@ -122,6 +123,23 @@ Leave nil when using `notation-server-start', which makes its own."
   "Return the emacsclient belonging to this Emacs, or the one on PATH."
   (let ((own (expand-file-name "emacsclient" invocation-directory)))
     (if (file-executable-p own) own (executable-find "emacsclient"))))
+
+(defvar org-todo-keywords)
+
+(defun notation-server--todo-sequences ()
+  "Return `org-todo-keywords' as \"#+TODO:\" line values.
+Fast-access keys and logging options such as \"(t)\" or \"(w@/!)\"
+are dropped. Loads Org, so that settings made in its load hooks
+\(e.g. Doom's `after!') are included."
+  (require 'org)
+  (let ((sequences (if (stringp (car org-todo-keywords))
+                       ;; The old format: one plain list of keywords.
+                       (list (cons 'sequence org-todo-keywords))
+                     org-todo-keywords)))
+    (mapcar (lambda (seq)
+              (mapconcat (lambda (kw) (replace-regexp-in-string "(.*)\\'" "" kw))
+                         (cdr seq) " "))
+            sequences)))
 
 (defun notation-server--post (path payload callback)
   "POST PAYLOAD as JSON to PATH asynchronously.
@@ -180,6 +198,8 @@ as an alist, or nil; ERROR is url.el's error descriptor, or nil."
                     (list "--dir" (expand-file-name notation-directory)
                           "--host" notation-server-host
                           "--port" (number-to-string notation-server-port))
+                    (mapcan (lambda (seq) (list "--todo-keywords" seq))
+                            (notation-server--todo-sequences))
                     (if emacsclient
                         (list "--emacsclient" emacsclient)
                       (list "--no-emacs")))))

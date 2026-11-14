@@ -81,6 +81,49 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; }
 .content table { border-collapse: collapse; }
 .content th, .content td { border: 1px solid var(--border); padding: 3px 8px; }
 .broken { color: var(--critical); text-decoration: line-through; }
+
+/* Foldable sections, one per heading (see notation-links.lua). */
+.content details.section > summary { list-style: none; display: flex; align-items: baseline; gap: 4px; cursor: pointer; }
+.content details.section > summary::-webkit-details-marker { display: none; }
+/* A chevron drawn from two borders: pointing right when folded, down when open. */
+.content details.section > summary::before {
+  content: ""; flex: none; align-self: center; width: 0.38em; height: 0.38em; margin: 0 0.32em 0 0.1em;
+  border: solid var(--text-muted); border-width: 0 2px 2px 0; transform: rotate(-45deg); transition: transform 0.15s;
+}
+.content details.section[open] > summary::before { transform: rotate(45deg); }
+.content details.section.empty > summary { cursor: default; }
+.content details.section.empty > summary::before { visibility: hidden; }
+.content details.section > :not(summary) { margin-left: calc(1em + 4px); }
+.content summary > :is(h1, h2, h3, h4, h5, h6) { flex: 1; margin: 0.45em 0 0.25em; font-weight: 600; }
+.content summary > h1 { font-size: 1.25em; }
+.content summary > h2 { font-size: 1.12em; }
+.content summary > h3 { font-size: 1.02em; }
+.content summary > :is(h4, h5, h6) { font-size: 1em; }
+.content summary:hover > * { color: var(--accent); }
+.content summary:hover > * .keyword { color: var(--kw); }
+.fold-all { display: flex; gap: 6px; }
+
+/* Org TODO keywords, priorities, tags and planning lines. */
+.keyword {
+  display: inline-block; /* keeps a CANCELLED heading's strike-through off the pill */
+  color: var(--kw); background: color-mix(in srgb, var(--kw) 15%, transparent);
+  border-radius: 4px; padding: 0 5px; font-size: 0.7em; font-weight: 700; letter-spacing: 0.04em; vertical-align: 0.15em;
+}
+.content :is(h1, h2, h3, h4, h5, h6):has(> .done) { color: var(--text-muted); font-weight: 500; }
+.content :is(h1, h2, h3, h4, h5, h6):has(> .CANCELLED, > .CANCELED) { text-decoration: line-through; }
+.priority {
+  display: inline-block; color: var(--text-secondary); border: 1px solid currentColor; border-radius: 3px;
+  padding: 0 4px; font: 700 0.65em/1.4 ui-monospace, Menlo, monospace; vertical-align: 0.2em;
+}
+.priority-A { color: var(--critical); }
+.priority-B { color: var(--series-4); }
+.content .tags { float: right; display: flex; gap: 4px; margin-left: 8px; font-weight: normal; }
+.content .tags .tag { color: var(--text-secondary); }
+.planning { margin: 0 0 0.4em; color: var(--text-muted); font-size: 0.8em; }
+.planning strong { font-weight: 600; letter-spacing: 0.03em; }
+.planning em { margin-right: 0.8em; font-style: normal; font-family: ui-monospace, Menlo, monospace; }
+.content .task-list { list-style: none; padding-left: 0.4em; }
+.content .task-list input { pointer-events: none; margin: 0 6px 0 0; }
 .note footer { margin-top: 28px; border-top: 1px solid var(--border); display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 20px; }
 .note footer h2 { font-size: 1em; margin: 12px 0 4px; }
 .note footer ul { margin: 0; padding-left: 18px; }

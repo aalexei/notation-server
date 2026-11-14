@@ -8,6 +8,7 @@ shown natively by the browser; other text is syntax highlighted.
 from __future__ import annotations
 
 import html
+import re
 import shutil
 import subprocess
 import threading
@@ -53,30 +54,53 @@ class RenderError(Exception):
     pass
 
 
+# "#+STARTUP:" options that open an Org file with its headings folded.
+FOLDED_STARTUP = re.compile(r"^#\+startup:.*\b(overview|fold|content)\b", re.IGNORECASE | re.MULTILINE)
+
+
 class PandocRenderer:
     # Some Org constructs (long runs of underscores in babel output) make
     # pandoc's Org reader take seconds; past this, the source is shown instead.
-    def __init__(self, pandoc: str | None = None, timeout: float = 15):
+    def __init__(self, pandoc: str | None = None, timeout: float = 15,
+                 todo_keywords: tuple[str, ...] = ("TODO | DONE",)):
         self.pandoc = pandoc or shutil.which("pandoc")
         self.timeout = timeout
+        # Pandoc only knows the keywords declared in the file itself, so
+        # Org files get the configured ones prepended. Also turn on planning
+        # lines (SCHEDULED, DEADLINE, CLOSED), and only take a_{b}, not
+        # a_b, as a subscript: underscores in names are common in notes.
+        self.org_preamble = "#+OPTIONS: p:t ^:{}\n" + "".join(f"#+TODO: {seq}\n" for seq in todo_keywords)
 
     def can_render(self, note: Note) -> bool:
         return self.pandoc is not None and note.ext.lower() in PANDOC_FORMATS
 
     def render(self, note: Note) -> str:
         assert self.pandoc
+        fmt = PANDOC_FORMATS[note.ext.lower()]
         cmd = [
             self.pandoc,
-            "--from", PANDOC_FORMATS[note.ext.lower()],
+            "--from", fmt,
             "--to", "html5",
-            # Only read the input file: no network fetches, no #+include.
+            "--wrap", "none",
+            # Only read the input: no network fetches, no #+include.
             "--sandbox",
             "--metadata", f"notation_id={note.id}",
             "--lua-filter", str(LUA_FILTER),
-            str(note.path),
         ]
+        stdin = None
+        if fmt == "org":
+            try:
+                text = note.path.read_bytes().decode("utf-8", errors="replace")
+            except OSError as e:
+                raise RenderError(str(e)) from e
+            if FOLDED_STARTUP.search(text):
+                cmd += ["--metadata", "notation_folded=true"]
+            stdin = self.org_preamble + text
+        else:
+            cmd.append(str(note.path))
         try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout)
+            proc = subprocess.run(cmd, input=stdin, capture_output=True, encoding="utf-8",
+                                  errors="replace", timeout=self.timeout)
         except subprocess.TimeoutExpired as e:
             raise RenderError(f"pandoc timed out after {self.timeout}s") from e
         if proc.returncode != 0:

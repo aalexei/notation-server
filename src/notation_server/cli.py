@@ -29,6 +29,9 @@ def main(argv: list[str] | None = None) -> None:
                    help="also take links from a note's non-main files")
     p.add_argument("--exclude-tags", default="journal",
                    help="comma-separated tags hidden by default (default: %(default)s)")
+    p.add_argument("--todo-keywords", action="append", metavar="SEQUENCE",
+                   help='an Org TODO sequence as on a #+TODO line, e.g. "TODO NEXT | DONE"; '
+                        'repeat for several (default: "TODO | DONE")')
     args = p.parse_args(argv)
 
     root = Path(args.dir).expanduser()
@@ -50,6 +53,7 @@ def main(argv: list[str] | None = None) -> None:
         watch=not args.no_watch,
         scan_attachments=args.scan_attachments,
         exclude_tags=tuple(t for t in args.exclude_tags.split(",") if t),
+        **({"todo_keywords": tuple(args.todo_keywords)} if args.todo_keywords else {}),
     )
     if "NOTATION_SERVER_TOKEN" not in os.environ:
         print(f"notation-server token: {token}", file=sys.stderr)

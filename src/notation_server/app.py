@@ -19,7 +19,7 @@ from .config import Settings
 from .emacs import TOKEN_HEADER, open_in_emacs, require_token
 from .events import EventBroker
 from .index import Note, NoteIndex
-from .render import ViewBuilder
+from .render import PandocRenderer, ViewBuilder
 
 log = logging.getLogger("notation_server")
 
@@ -45,7 +45,7 @@ async def _watch(index: NoteIndex, broker: EventBroker, stop: asyncio.Event) -> 
 
 def create_app(settings: Settings) -> FastAPI:
     index = NoteIndex(settings.root, scan_attachments=settings.scan_attachments)
-    views = ViewBuilder()
+    views = ViewBuilder(PandocRenderer(todo_keywords=settings.todo_keywords))
     broker = EventBroker()
     templates = Jinja2Templates(directory=HERE / "templates")
 

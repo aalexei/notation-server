@@ -24,3 +24,6 @@ class Settings:
     # Tags hidden from the graph by default (mirrors `notation-find-note'
     # hiding journal notes).
     exclude_tags: tuple[str, ...] = ("journal",)
+    # Org TODO keyword sequences, as on a "#+TODO:" line ("TODO NEXT | DONE").
+    # notation-server.el passes `org-todo-keywords'; Org's own default otherwise.
+    todo_keywords: tuple[str, ...] = ("TODO | DONE",)
