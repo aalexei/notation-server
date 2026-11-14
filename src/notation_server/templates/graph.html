@@ -8,6 +8,9 @@
   <style>{{ highlight_css }}</style>
   <script id="config" type="application/json">{{ config | tojson }}</script>
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
   <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
@@ -31,6 +34,9 @@
           </select>
         </label>
         <label>Hide tags <input id="exclude-tags" type="text" size="10"></label>
+        <label>Created <input id="from" type="date" aria-label="Created from"> – <input id="to" type="date" aria-label="Created to"></label>
+        <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
+        <label title="Double-click a group to collapse it; click a collapsed group to expand it"><input id="group" type="checkbox"> Group by colour</label>
         <span id="stats"></span>
       </div>
       <div id="legend" aria-label="Colour legend"></div>
