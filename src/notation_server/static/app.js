@@ -28,18 +28,23 @@ const $ = (sel) => document.querySelector(sel);
 const searchInput = $("#search");
 const colourBy = $("#colour-by");
 const depthSelect = $("#depth");
-const excludeInput = $("#exclude-tags");
 const hideIsolated = $("#hide-isolated");
 const fromInput = $("#from");
 const toInput = $("#to");
 const groupBox = $("#group");
-excludeInput.value = cfg.excludeTags.join(",");
+
+// Toggled from the legend. A note is hidden if any of its tags is, or its
+// folder is; "(untagged)" and "(root)" stand for no tag and the top folder.
+const UNTAGGED = "(untagged)";
+const ROOT = "(root)";
+const hidden = { tag: new Set(cfg.excludeTags), subdir: new Set() };
+let legendExpanded = false; // whether the uncoloured entries are listed
 
 const idOf = (end) => (typeof end === "object" ? end.id : end);
 
 function category(node) {
-  if (colourBy.value === "subdir") return node.subdir || "(root)";
-  return node.tags[0] || "(untagged)";
+  if (colourBy.value === "subdir") return node.subdir || ROOT;
+  return node.tags[0] || UNTAGGED;
 }
 
 // Only the categories with a colour of their own are grouped.
@@ -54,7 +59,7 @@ function assignSlots() {
   const counts = new Map();
   for (const n of graph.nodes) counts.set(category(n), (counts.get(category(n)) || 0) + 1);
   const ranked = [...counts.entries()]
-    .filter(([c]) => c !== "(untagged)" && c !== "(root)")
+    .filter(([c]) => c !== UNTAGGED && c !== ROOT)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, SLOTS);
   slotOf = new Map(ranked.map(([c], i) => [c, i]));
@@ -70,14 +75,55 @@ function withAlpha(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// While grouping, each legend entry is a button that collapses its group.
+// How many notes have each tag (any of their tags) or are in each folder.
+function legendCounts(mode) {
+  const counts = new Map();
+  const add = (k) => counts.set(k, (counts.get(k) || 0) + 1);
+  for (const n of graph.nodes) {
+    if (mode === "subdir") add(n.subdir || ROOT);
+    else if (n.tags.length) n.tags.forEach(add);
+    else add(UNTAGGED);
+  }
+  return counts;
+}
+
+// The legend lists the tags (or folders) of the colour-by mode: coloured
+// ones first, then untagged notes; the rest are listed on request, except
+// hidden ones, which always are. Clicking an entry shows or hides its
+// notes; while grouping, coloured entries also get a collapse button.
 function renderLegend() {
-  const swatch = (colour) => `<span class="swatch" style="background:${colour}"></span>`;
-  const items = [...slotOf.keys()].map((c) => (groupBox.checked
-    ? `<button type="button" data-cat="${escapeHtml(c)}" aria-pressed="${collapsed.has(c)}"
-         title="Collapse or expand this group">${swatch(colourFor(c))}${escapeHtml(c)}</button>`
-    : `<span>${swatch(colourFor(c))}${escapeHtml(c)}</span>`));
-  items.push(`<span>${swatch(css("--other"))}other</span>`);
+  const mode = colourBy.value;
+  const other = mode === "tag" ? "subdir" : "tag";
+  const counts = legendCounts(mode);
+  const label = (k) => ({ [UNTAGGED]: "untagged", [ROOT]: "top folder" })[k] || k;
+  const entry = (k) => {
+    const shown = !hidden[mode].has(k);
+    const colour = slotOf.has(k) ? colourFor(k) : css("--other");
+    const fold = groupBox.checked && slotOf.has(k)
+      ? `<button type="button" class="fold" data-group="${escapeHtml(k)}" aria-pressed="${collapsed.has(k)}"
+           title="${collapsed.has(k) ? "Expand" : "Collapse"} this group">${collapsed.has(k) ? "+" : "−"}</button>`
+      : "";
+    return `<span class="entry${shown ? "" : " off"}"><button type="button" class="toggle" data-key="${escapeHtml(k)}"
+        aria-pressed="${shown}" title="${shown ? "Hide" : "Show"} these notes"><span class="swatch" style="background:${colour}"></span>${
+        escapeHtml(label(k))} <span class="count">${counts.get(k)}</span></button>${fold}</span>`;
+  };
+  const byUse = (a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b);
+  const first = [...slotOf.keys(), UNTAGGED, ROOT].filter((k) => counts.has(k));
+  const rest = [...counts.keys()].filter((k) => !first.includes(k)).sort(byUse);
+  const listed = legendExpanded ? rest : rest.filter((k) => hidden[mode].has(k));
+
+  const items = [...first, ...listed].map(entry);
+  if (rest.length > listed.length || legendExpanded) {
+    items.push(`<button type="button" class="more" aria-expanded="${legendExpanded}">${
+      legendExpanded ? "fewer" : `+${rest.length - listed.length} more`}</button>`);
+  }
+  if (hidden[mode].size) items.push(`<button type="button" class="reset" data-reset="${mode}">show all</button>`);
+  // Hidden folders still apply when colouring by tag, and the other way round.
+  const n = hidden[other].size;
+  if (n) {
+    items.push(`<button type="button" class="reset" data-reset="${other}">${n} hidden ${
+      other === "tag" ? "tag" : "folder"}${n > 1 ? "s" : ""} · show</button>`);
+  }
   $("#legend").innerHTML = items.join("");
 }
 
@@ -141,13 +187,13 @@ function buildModel() {
 }
 
 function noteFilter() {
-  const exclude = new Set(excludeInput.value.split(",").map((t) => t.trim()).filter(Boolean));
   // Note ids start with their creation date, YYYYMMDD.
   const from = fromInput.value.replaceAll("-", "");
   const to = toInput.value.replaceAll("-", "");
   return (d) => {
     const day = d.id.slice(0, 8);
-    return !d.tags.some((t) => exclude.has(t)) && (!from || day >= from) && (!to || day <= to);
+    const tagHidden = d.tags.length ? d.tags.some((t) => hidden.tag.has(t)) : hidden.tag.has(UNTAGGED);
+    return !tagHidden && !hidden.subdir.has(d.subdir || ROOT) && (!from || day >= from) && (!to || day <= to);
   };
 }
 
@@ -831,10 +877,22 @@ groupBox.addEventListener("change", () => {
   update({ structure: true, relayout: "fresh" });
 });
 $("#legend").addEventListener("click", (evt) => {
-  const button = evt.target.closest("button[data-cat]");
-  if (button) toggleGroup(button.dataset.cat);
+  const button = evt.target.closest("button");
+  if (!button) return;
+  const { key, group, reset } = button.dataset;
+  if (group !== undefined) { toggleGroup(group); return; }
+  if (button.classList.contains("more")) {
+    legendExpanded = !legendExpanded;
+  } else if (key !== undefined) {
+    const set = hidden[colourBy.value];
+    if (!set.delete(key)) set.add(key);
+  } else if (reset) {
+    hidden[reset].clear();
+  }
+  renderLegend();
+  if (!button.classList.contains("more")) update({ relayout: true });
 });
-for (const input of [depthSelect, excludeInput, hideIsolated, fromInput, toInput]) {
+for (const input of [depthSelect, hideIsolated, fromInput, toInput]) {
   input.addEventListener("change", () => update({ relayout: true }));
 }
 window.addEventListener("popstate", (evt) => {

@@ -35,13 +35,12 @@
               <option value="3">3 hops</option>
             </select>
           </label>
-          <label>Hide tags <input id="exclude-tags" type="text" size="10"></label>
           <label>Created <input id="from" type="date" aria-label="Created from"> – <input id="to" type="date" aria-label="Created to"></label>
           <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
-          <label title="Click a legend entry to collapse or expand its group"><input id="group" type="checkbox"> Group by colour</label>
+          <label title="Collapse or expand a group with the button on its legend entry"><input id="group" type="checkbox"> Group by colour</label>
           <span id="stats"></span>
         </div>
-        <div id="legend" aria-label="Colour legend"></div>
+        <div id="legend" role="group" aria-label="Colour legend: click an entry to show or hide its notes"></div>
       </div>
       <div id="views">
         <div id="view-tabs" role="tablist" aria-label="Graph view">
