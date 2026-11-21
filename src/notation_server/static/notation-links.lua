@@ -1,7 +1,8 @@
 -- Pandoc filter: point links at the notation server, and dress up Org.
 --
 --   notation:ID          -> /note/ID  (as a link the frontend intercepts)
---   relative paths       -> /files/<note id>/<path>  (attachments, images)
+--   relative paths and   -> /files/<note id>/<path>  (attachments, images)
+--   attachment:PATH
 --   TODO keywords        -> coloured pills (style="--kw: <colour>")
 --   [#A] priorities      -> badges; heading tags gathered at the end
 --   SCHEDULED/CLOSED/... -> a "planning" line
@@ -42,6 +43,8 @@ local function rewrite_target(target)
     return "/note/" .. id, id
   end
   target = target:gsub("^file:", "")
+  -- Under notation, org-attach keeps a note's attachments next to it.
+  target = target:gsub("^attachment:", "")
   if note_id ~= "" and is_relative(target) then
     return "/files/" .. note_id .. "/" .. target:gsub("^%./", ""), nil
   end

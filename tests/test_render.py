@@ -31,6 +31,13 @@ def render(tmp_path: Path, text: str, **kw) -> str:
     return PandocRenderer(**kw).render(note)
 
 
+def test_attachment_links_point_next_to_the_note(tmp_path):
+    html = render(tmp_path, "[[attachment:plot.png]] and [[attachment:paper v2.pdf][the paper]]\n")
+    assert f'<img src="/files/{ID}/plot.png"' in html
+    assert f'href="/files/{ID}/paper v2.pdf">the paper</a>' in html
+    assert "attachment:" not in html
+
+
 def test_configured_keywords_become_pills(tmp_path):
     html = render(tmp_path, ORG, todo_keywords=("TODO WAITING | DONE", "MEET |"))
     assert 'class="todo WAITING keyword" style="--kw: var(--series-4)"' in html
