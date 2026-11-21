@@ -48,7 +48,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; }
 /* A 1px line with a 7px grab area. */
 #splitter { cursor: col-resize; touch-action: none; padding: 0 3px; background: var(--border); background-clip: content-box; }
 #splitter:hover, #splitter:focus-visible, #splitter.dragging { padding: 0 2px; background-color: var(--accent); outline: none; }
-/* Left column: the controls panel above the tabbed graph views. */
+/* Left column: the controls panel above the graph. */
 #controls { flex: none; background: var(--surface-2); border-bottom: 1px solid var(--border); }
 #toolbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; padding: 8px 12px; color: var(--text-secondary); }
 #toolbar input, #toolbar select {
@@ -71,17 +71,7 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; }
 #legend .more, #legend .reset { color: var(--accent); }
 
 #views { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-#view-tabs { flex: none; display: flex; gap: 2px; padding: 6px 12px 0; border-bottom: 1px solid var(--border); }
-#view-tabs button {
-  font: inherit; color: var(--text-secondary); background: none; cursor: pointer;
-  border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 4px 14px; margin-bottom: -1px;
-}
-#view-tabs button:hover { color: var(--text-primary); }
-#view-tabs button[aria-selected="true"] {
-  color: var(--text-primary); background: var(--surface-1); border-color: var(--border); font-weight: 600;
-}
 .graph { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-.graph[hidden] { display: none; }
 /* 3d-force-graph's hover tooltip. */
 .graph .scene-tooltip { padding: 0; background: none; }
 .node-tip { background: var(--surface-2); color: var(--text-primary); border: 1px solid var(--border);
@@ -156,6 +146,11 @@ code { font-family: ui-monospace, Menlo, monospace; font-size: 0.92em; }
 .note footer { margin-top: 28px; border-top: 1px solid var(--border); display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 20px; }
 .note footer h2 { font-size: 1em; margin: 12px 0 4px; }
 .note footer ul { margin: 0; padding-left: 18px; }
+/* The graph of linked notes takes the footer's full width. */
+.note footer .neighbours-section { grid-column: 1 / -1; }
+.neighbours { position: relative; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-1); }
+.neighbours-cut { margin: 0 0 6px; font-size: 12px; }
+.neighbours-cut button { font: inherit; color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; }
 
 /* Pandoc syntax-highlighting token classes. */
 code span.kw, code span.cf { color: var(--series-7); }

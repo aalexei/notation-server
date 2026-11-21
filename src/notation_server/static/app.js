@@ -1,27 +1,24 @@
-// Graph of notes in two views, 2D (Cytoscape) and 3D (3d-force-graph),
-// driven by the same controls + note panel (HTMX) + live updates (SSE).
+// Graph of notes (3d-force-graph) + note panel (HTMX) with a graph of the
+// note's neighbours (Cytoscape) + live updates (SSE).
 //
-// The controls build one model: which notes and edges exist (after
-// grouping), which are visible, and which match the search. Each view only
-// draws that model, so both always show the same data.
+// The controls build one model of the whole graph: which notes and edges
+// exist (after grouping), which are visible, and which match the search;
+// the 3D view draws it. The panel's neighbour graph ignores the controls.
 "use strict";
 
 const cfg = JSON.parse(document.getElementById("config").textContent);
 const SLOTS = 8; // categorical colour slots; further categories fold into "other"
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-const FORCE_GRAPH_URL = "https://unpkg.com/3d-force-graph@1.80.2/dist/3d-force-graph.min.js";
-const VIEW_KEY = "notation-server.view";
-const GROUP = "group:"; // id prefix of group boxes and collapsed groups
+const GROUP = "group:"; // id prefix of collapsed groups
 
 let selectedId = null;
 let graph = { nodes: [], edges: [], problems: [] };
 let slotOf = new Map(); // category -> slot index, fixed from the whole corpus
 let collapsed = new Set(); // categories drawn as a single node while grouping
 
-// What the views draw. `nodes` are notes and collapsed groups; `groups` are
-// the boxes of expanded groups (only the 2D view draws those).
-let model = { nodes: [], groups: [], edges: [], byId: new Map(), neighbours: new Map() };
-let visible = new Set(); // ids of visible nodes and group boxes
+// What the 3D view draws: `nodes` are notes and collapsed groups.
+let model = { nodes: [], edges: [], byId: new Map(), neighbours: new Map() };
+let visible = new Set(); // ids of visible nodes
 let matches = null; // ids matching the search, or null when not searching
 
 const $ = (sel) => document.querySelector(sel);
@@ -171,19 +168,16 @@ function buildModel() {
   for (const e of edges) { link(e.source, e.target); link(e.target, e.source); }
   const degree = (id) => (neighbours.get(id) || new Set()).size;
 
-  const cats = [...new Set(graph.nodes.map(groupOf))].filter((g) => g !== null);
   const nodes = [
-    ...cats.filter((g) => members.has(g)).map((g) => ({
-      id: GROUP + g, cat: g, title: `${g} (${members.get(g).length})`, colour: colourFor(g),
-      tags: [], aliases: [], members: members.get(g), size: members.get(g).length, degree: degree(GROUP + g),
+    ...[...members].map(([g, ms]) => ({
+      id: GROUP + g, cat: g, title: `${g} (${ms.length})`, colour: colourFor(g),
+      tags: [], aliases: [], members: ms, size: ms.length, degree: degree(GROUP + g),
     })),
     ...graph.nodes.filter((n) => !standIn.has(n.id)).map((n) => ({
       ...n, colour: colourFor(category(n)), degree: degree(n.id), groupCat: groupOf(n),
     })),
   ];
-  const groups = cats.filter((g) => !members.has(g))
-    .map((g) => ({ id: GROUP + g, cat: g, title: g, colour: colourFor(g) }));
-  model = { nodes, groups, edges, byId: new Map(nodes.map((n) => [n.id, n])), neighbours };
+  model = { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])), neighbours };
 }
 
 function noteFilter() {
@@ -221,10 +215,9 @@ function computeVisibility() {
       || [...(model.neighbours.get(id) || [])].some((nb) => before.has(nb))));
   }
   let count = 0;
-  for (const id of [...shown]) {
+  for (const id of shown) {
     const n = model.byId.get(id);
     count += n.members ? n.members.filter(memberShown).length : 1;
-    if (n.groupCat) shown.add(GROUP + n.groupCat); // its group box
   }
   visible = shown;
   $("#stats").textContent = `${count} of ${graph.nodes.length} notes`;
@@ -241,37 +234,17 @@ function computeMatches() {
 }
 
 // Recompute the model and redraw. `structure`: the nodes or edges changed
-// (data, grouping, colours). `relayout`: true to re-run the layout from the
-// current positions, "fresh" to start over. Hidden views catch up when shown.
+// (data, grouping, colours). `relayout`: reheat the simulation.
 function update({ structure = false, relayout = false } = {}) {
   if (structure) buildModel();
   computeVisibility();
   computeMatches();
-  for (const [name, view] of Object.entries(views)) {
-    view.pending = mergeChanges(view.pending, { structure, relayout });
-    if (name === activeView && view.mounted) flush(view);
-  }
-}
-
-function mergeChanges(a, b) {
-  if (!a) return b;
-  const strength = (r) => ({ false: 0, true: 1, fresh: 2 })[String(r)];
-  return {
-    structure: a.structure || b.structure,
-    relayout: strength(a.relayout) >= strength(b.relayout) ? a.relayout : b.relayout,
-  };
-}
-
-function flush(view) {
-  const change = view.pending;
-  view.pending = null;
-  view.render(change || {});
+  if (graphView.mounted) graphView.render({ structure, relayout });
 }
 
 function restyle() {
   computeMatches();
-  const view = views[activeView];
-  if (view.mounted) view.restyle();
+  if (graphView.mounted) graphView.restyle();
 }
 
 function toggleGroup(cat) {
@@ -280,227 +253,7 @@ function toggleGroup(cat) {
   update({ structure: true, relayout: true });
 }
 
-// The 2D view.
-
-function cyStyle() {
-  return [
-    {
-      selector: "node",
-      style: {
-        "background-color": "data(colour)",
-        label: "data(title)",
-        color: css("--text-secondary"),
-        "font-size": 11,
-        "min-zoomed-font-size": 9,
-        "text-valign": "bottom",
-        "text-margin-y": 3,
-        width: "mapData(degree, 0, 20, 10, 34)",
-        height: "mapData(degree, 0, 20, 10, 34)",
-        "border-width": 2,
-        "border-color": css("--surface-1"),
-      },
-    },
-    {
-      selector: "node:parent",
-      style: {
-        shape: "round-rectangle",
-        "background-opacity": 0.07,
-        "border-width": 1,
-        "border-color": "data(colour)",
-        "border-opacity": 0.6,
-        padding: 14,
-        "text-valign": "top",
-        "font-size": 14,
-        "min-zoomed-font-size": 0,
-      },
-    },
-    {
-      selector: "node.collapsed",
-      style: {
-        shape: "round-rectangle",
-        width: "mapData(size, 1, 100, 26, 80)",
-        height: "mapData(size, 1, 100, 26, 80)",
-        "text-valign": "bottom",
-        "font-size": 14,
-        "min-zoomed-font-size": 0,
-        "font-weight": "bold",
-        color: css("--text-primary"),
-      },
-    },
-    {
-      selector: "edge",
-      style: {
-        width: "mapData(count, 1, 10, 1.2, 4)",
-        "line-color": css("--edge"),
-        "target-arrow-color": css("--edge"),
-        "target-arrow-shape": "triangle",
-        "arrow-scale": 0.7,
-        "curve-style": "bezier",
-      },
-    },
-    { selector: "edge[?both]", style: { "source-arrow-color": css("--edge"), "source-arrow-shape": "triangle" } },
-    { selector: ".hidden", style: { display: "none" } },
-    { selector: ".faded", style: { opacity: 0.15 } },
-    {
-      selector: "node:selected, node.match",
-      style: { "border-color": css("--text-primary"), "border-width": 3, color: css("--text-primary"), "z-index": 10 },
-    },
-    {
-      selector: "edge.incident",
-      style: { "line-color": css("--text-secondary"), "target-arrow-color": css("--text-secondary"), width: 2 },
-    },
-    { selector: "edge.incident[?both]", style: { "source-arrow-color": css("--text-secondary") } },
-  ];
-}
-
-function centroid(points) {
-  if (!points.length) return null;
-  return {
-    x: points.reduce((s, p) => s + p.x, 0) / points.length,
-    y: points.reduce((s, p) => s + p.y, 0) / points.length,
-  };
-}
-
-const cyView = {
-  el: $("#graph-2d"),
-  cy: null,
-  pending: null,
-  placed: new Set(), // ids that have been through a layout
-  lastPos: new Map(), // id -> position, kept across rebuilds
-
-  get mounted() { return this.cy !== null; },
-
-  async mount() {
-    const cy = (this.cy = cytoscape({
-      container: this.el, elements: this.elements(), style: cyStyle(), wheelSensitivity: 0.3,
-    }));
-    cy.on("tap", "node", (evt) => {
-      const n = evt.target;
-      if (n.hasClass("collapsed")) toggleGroup(n.data("cat"));
-      else if (!n.isParent()) focusNote(n.id());
-    });
-    cy.on("dbltap", "node", (evt) => { if (evt.target.isParent()) toggleGroup(evt.target.data("cat")); });
-    cy.on("tap", (evt) => { if (evt.target === cy) clearSelection(); });
-    // Cytoscape only notices window resizes by itself.
-    new ResizeObserver(() => cy.resize()).observe(this.el);
-    this.applyVisibility();
-    this.runLayout(true);
-    this.restyle();
-  },
-
-  elements() {
-    return [
-      ...model.groups.map((g) => ({
-        group: "nodes", data: { ...g, tags: [], aliases: [], degree: 0 }, selectable: false,
-      })),
-      ...model.nodes.map((n) => {
-        if (n.members) return { group: "nodes", data: n, classes: "collapsed", selectable: false };
-        return { group: "nodes", data: n.groupCat ? { ...n, parent: GROUP + n.groupCat } : n };
-      }),
-      ...model.edges.map((e) => ({ group: "edges", data: e })),
-    ];
-  },
-
-  render({ structure = false, relayout = false }) {
-    const cy = this.cy;
-    if (structure) {
-      // Replace the elements, keeping every note where it was.
-      cy.nodes(":childless").forEach((n) => {
-        if (this.placed.has(n.id())) this.lastPos.set(n.id(), { ...n.position() });
-      });
-      cy.elements().remove();
-      cy.add(this.elements());
-      cy.nodes(":childless").forEach((n) => {
-        const members = n.data("members");
-        const at = members
-          ? centroid(members.map((m) => this.lastPos.get(m.id)).filter(Boolean))
-          : this.lastPos.get(n.id());
-        if (!at) return;
-        n.position(at);
-        this.placed.add(n.id());
-      });
-    }
-    this.applyVisibility();
-    if (relayout || cy.nodes(":childless:visible").some((n) => !this.placed.has(n.id()))) {
-      this.runLayout(relayout === "fresh");
-    }
-    this.restyle();
-  },
-
-  applyVisibility() {
-    this.cy.batch(() => this.cy.nodes().forEach((n) => { n.toggleClass("hidden", !visible.has(n.id())); }));
-  },
-
-  runLayout(initial) {
-    const visibleEls = this.cy.elements(":visible");
-    const notes = visibleEls.nodes(":childless");
-    const known = notes.filter((n) => this.placed.has(n.id()));
-    const randomize = initial || known.empty();
-    if (!randomize) {
-      // Notes shown for the first time start next to a neighbour, not piled at the origin.
-      const box = known.boundingBox();
-      notes.difference(known).forEach((n) => {
-        const anchor = n.neighborhood().nodes().intersection(known)[0];
-        const at = anchor ? anchor.position() : { x: box.x1 + Math.random() * box.w, y: box.y1 + Math.random() * box.h };
-        n.position({ x: at.x + Math.random() * 40 - 20, y: at.y + Math.random() * 40 - 20 });
-      });
-    }
-    notes.forEach((n) => this.placed.add(n.id()));
-    visibleEls.layout({
-      name: "fcose",
-      randomize,
-      animate: !randomize && visibleEls.length < 1500,
-      animationDuration: 400,
-      nodeRepulsion: 6000,
-      idealEdgeLength: 60,
-      nodeSeparation: 60,
-      padding: 30,
-    }).run();
-  },
-
-  // Search, selection and the selected note's edges.
-  restyle() {
-    const cy = this.cy;
-    cy.batch(() => {
-      cy.elements().removeClass("faded match incident");
-      cy.nodes().unselect();
-      if (matches) {
-        const hits = cy.nodes(":childless").filter((n) => matches.has(n.id()));
-        hits.addClass("match");
-        // Fading a group box would fade the matches inside it too.
-        cy.elements().not(":parent").difference(hits).difference(hits.edgesWith(hits)).addClass("faded");
-      }
-      const node = selectedId && cy.getElementById(selectedId);
-      if (node && node.nonempty()) {
-        node.select();
-        node.connectedEdges().addClass("incident");
-      }
-    });
-  },
-
-  focus(id) {
-    const node = this.cy.getElementById(id);
-    if (node.nonempty() && visible.has(id)) {
-      this.cy.animate({ center: { eles: node }, zoom: Math.max(this.cy.zoom(), 1) }, { duration: 300 });
-    }
-  },
-
-  show() { this.cy.resize(); },
-  hide() {},
-  theme() { this.cy.style(cyStyle()); },
-};
-
-// The 3D view.
-
-function loadScript(src) {
-  return new Promise((resolve, reject) => {
-    const s = document.createElement("script");
-    s.src = src;
-    s.onload = resolve;
-    s.onerror = () => reject(new Error(`could not load ${src}`));
-    document.head.append(s);
-  });
-}
+// The 3D graph.
 
 // Pull the notes of each group towards the group's centroid while
 // grouping, so each tag (or folder) forms its own region.
@@ -535,11 +288,9 @@ function centroid3(points) {
   return { x: mean("x"), y: mean("y"), z: mean("z") };
 }
 
-const fgView = {
-  el: $("#graph-3d"),
+const graphView = {
+  el: $("#graph"),
   fg: null,
-  mounting: null,
-  pending: null,
   hoverId: null,
   framed: false,
   // Node objects persist across updates, so the simulation keeps their
@@ -552,16 +303,8 @@ const fgView = {
   get mounted() { return this.fg !== null; },
 
   mount() {
-    this.mounting ||= this.load();
-    return this.mounting;
-  },
-
-  async load() {
-    try {
-      if (typeof ForceGraph3D === "undefined") await loadScript(FORCE_GRAPH_URL);
-    } catch (e) {
-      this.el.innerHTML = `<p class="notice">The 3D view is unavailable: ${escapeHtml(e.message)}</p>`;
-      this.mounting = null;
+    if (typeof ForceGraph3D === "undefined") {
+      this.el.innerHTML = `<p class="notice">The graph is unavailable: 3d-force-graph did not load.</p>`;
       return;
     }
     const el = this.el;
@@ -685,54 +428,159 @@ const fgView = {
     this.fg.cameraPosition({ x: n.x * ratio, y: n.y * ratio, z: (n.z || 0) * ratio }, n, 1000);
   },
 
-  show() { this.fg.resumeAnimation(); },
-  hide() { this.fg.pauseAnimation(); },
   theme() {
     this.fg.backgroundColor(css("--surface-1"));
     this.restyle();
   },
 };
 
-// Tabs.
+// The note panel's graph of the open note and its nearest neighbours: every
+// note it links to or that links to it, whatever the controls hide. Past
+// NEIGHBOUR_LIMIT, only the closest are drawn unless asked for all.
 
-const views = { "2d": cyView, "3d": fgView };
-let activeView = views[localStorage.getItem(VIEW_KEY)] ? localStorage.getItem(VIEW_KEY) : "2d";
+const NEIGHBOUR_LIMIT = 30;
+const MISSING = "missing:"; // id prefix of links to notes that don't exist
+const neighbourGraph = { cy: null, observer: null, noteId: null, showAll: false };
 
-async function showView(name) {
-  activeView = name;
-  localStorage.setItem(VIEW_KEY, name);
-  for (const tab of document.querySelectorAll("#view-tabs [role=tab]")) {
-    const selected = tab.dataset.view === name;
-    tab.setAttribute("aria-selected", selected);
-    tab.tabIndex = selected ? 0 : -1;
-  }
-  for (const [other, view] of Object.entries(views)) {
-    view.el.hidden = other !== name;
-    if (other !== name && view.mounted) view.hide();
-  }
-  const view = views[name];
-  if (!view.mounted) {
-    view.pending = null; // mounting draws the current model
-    await view.mount();
-    if (activeView !== name || !view.mounted) return;
-  } else {
-    view.show();
-    flush(view);
-  }
-  if (selectedId) view.focus(selectedId);
+function neighbourStyle() {
+  return [
+    {
+      selector: "node",
+      style: {
+        "background-color": "data(colour)",
+        label: "data(title)",
+        color: css("--text-secondary"),
+        "font-size": 11,
+        "text-valign": "bottom",
+        "text-margin-y": 3,
+        "text-wrap": "ellipsis",
+        "text-max-width": "120px",
+        width: 12,
+        height: 12,
+        "border-width": 2,
+        "border-color": css("--surface-1"),
+      },
+    },
+    {
+      selector: "node.centre",
+      style: {
+        width: 22, height: 22, "font-size": 12, "font-weight": "bold",
+        color: css("--text-primary"), "border-color": css("--text-primary"),
+      },
+    },
+    {
+      selector: "node.missing",
+      style: {
+        "background-opacity": 0, "border-style": "dashed", "border-color": css("--critical"),
+        color: css("--critical"),
+      },
+    },
+    {
+      selector: "edge",
+      style: {
+        width: 1.3,
+        "line-color": css("--text-muted"),
+        "target-arrow-color": css("--text-muted"),
+        "target-arrow-shape": "triangle",
+        "arrow-scale": 0.8,
+        "curve-style": "bezier",
+      },
+    },
+    { selector: "edge[?both]", style: { "source-arrow-color": css("--text-muted"), "source-arrow-shape": "triangle" } },
+    // Links between two neighbours, for context.
+    { selector: "edge.between", style: { width: 1, "line-color": css("--edge"), "target-arrow-color": css("--edge"),
+      "source-arrow-color": css("--edge"), opacity: 0.6 } },
+    { selector: "edge.missing", style: { "line-style": "dashed", "line-color": css("--critical"),
+      "target-arrow-color": css("--critical") } },
+  ];
 }
 
-$("#view-tabs").addEventListener("click", (evt) => {
-  const tab = evt.target.closest("[role=tab]");
-  if (tab && tab.dataset.view !== activeView) showView(tab.dataset.view);
-});
-$("#view-tabs").addEventListener("keydown", (evt) => {
-  if (evt.key !== "ArrowLeft" && evt.key !== "ArrowRight") return;
-  const tabs = [...document.querySelectorAll("#view-tabs [role=tab]")];
-  const next = tabs[(tabs.findIndex((t) => t.dataset.view === activeView) + 1) % tabs.length];
-  next.focus();
-  showView(next.dataset.view);
-});
+function renderNeighbours() {
+  const ng = neighbourGraph;
+  if (ng.cy) { ng.cy.destroy(); ng.cy = null; }
+  if (ng.observer) { ng.observer.disconnect(); ng.observer = null; }
+  const el = $("#panel .neighbours");
+  if (!el) return;
+  const id = el.dataset.noteId;
+  if (id !== ng.noteId) { ng.noteId = id; ng.showAll = false; }
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const note = byId.get(id);
+  if (!note) return;
+
+  const out = new Set();
+  const into = new Set();
+  const degree = new Map();
+  for (const e of graph.edges) {
+    degree.set(e.source, (degree.get(e.source) || 0) + 1);
+    degree.set(e.target, (degree.get(e.target) || 0) + 1);
+    if (e.source === id) out.add(e.target);
+    if (e.target === id) into.add(e.source);
+  }
+  // Closest first: linked both ways, then the best connected.
+  const both = (n) => (out.has(n) && into.has(n) ? 1 : 0);
+  const ranked = [...new Set([...out, ...into])].sort((a, b) => both(b) - both(a)
+    || (degree.get(b) || 0) - (degree.get(a) || 0) || byId.get(a).title.localeCompare(byId.get(b).title));
+  const shown = ng.showAll ? ranked : ranked.slice(0, NEIGHBOUR_LIMIT);
+  const missing = note.broken || [];
+
+  // The cut-off notice and its toggle.
+  let bar = el.parentElement.querySelector(".neighbours-cut");
+  if (ranked.length > NEIGHBOUR_LIMIT) {
+    if (!bar) {
+      bar = document.createElement("p");
+      bar.className = "neighbours-cut muted";
+      el.before(bar);
+    }
+    bar.innerHTML = ng.showAll
+      ? `All ${ranked.length} neighbours · <button type="button">show the closest ${NEIGHBOUR_LIMIT}</button>`
+      : `The closest ${NEIGHBOUR_LIMIT} of ${ranked.length} neighbours · <button type="button">show all</button>`;
+  } else if (bar) {
+    bar.remove();
+  }
+
+  const keep = new Set([id, ...shown]);
+  const node = (n, classes = "") => ({
+    group: "nodes", data: { id: n.id, title: n.title, colour: colourFor(category(n)) }, classes,
+  });
+  const elements = [
+    node(note, "centre"),
+    ...shown.map((n) => node(byId.get(n))),
+    ...missing.map((m) => ({ group: "nodes", data: { id: MISSING + m, title: `missing ${m}` }, classes: "missing" })),
+    ...mergedEdges(graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target))).map((e) => ({
+      group: "edges", data: e, classes: e.source === id || e.target === id ? "" : "between",
+    })),
+    ...missing.map((m) => ({
+      group: "edges", data: { id: `${id}>${MISSING}${m}`, source: id, target: MISSING + m }, classes: "missing",
+    })),
+  ];
+  const count = shown.length + missing.length;
+  el.style.height = `${count <= 8 ? 240 : count <= 20 ? 320 : 420}px`;
+
+  // Fixed zoom and pan, so scrolling over it scrolls the panel; nodes can still be dragged.
+  const cy = (ng.cy = cytoscape({
+    container: el,
+    elements,
+    style: neighbourStyle(),
+    userZoomingEnabled: false,
+    userPanningEnabled: false,
+    boxSelectionEnabled: false,
+    autounselectify: true,
+    layout: {
+      name: "concentric",
+      concentric: (n) => (n.hasClass("centre") ? 2 : 1),
+      levelWidth: () => 1,
+      minNodeSpacing: 28,
+      padding: 24,
+      animate: false,
+    },
+  }));
+  const clickable = (n) => !n.hasClass("centre") && !n.hasClass("missing");
+  cy.on("tap", "node", (evt) => { if (clickable(evt.target)) focusNote(evt.target.id()); });
+  cy.on("mouseover", "node", (evt) => { el.style.cursor = clickable(evt.target) ? "pointer" : ""; });
+  cy.on("mouseout", "node", () => { el.style.cursor = ""; });
+  ng.observer = new ResizeObserver(() => { cy.resize(); cy.fit(undefined, 24); });
+  ng.observer.observe(el);
+}
 
 // Data, selection and the note panel.
 
@@ -763,8 +611,7 @@ async function focusNote(id, { push = true } = {}) {
   const expand = Boolean(note && collapsed.delete(groupOf(note)));
   if (expand) renderLegend();
   update({ structure: expand, relayout: expand || Number(depthSelect.value) > 0 });
-  const view = views[activeView];
-  if (view.mounted) view.focus(id);
+  if (graphView.mounted) graphView.focus(id);
   await loadPanel(id);
 }
 
@@ -785,6 +632,9 @@ async function loadPanel(id, { keepScroll = false } = {}) {
     panel.classList.remove("loading");
   }
 }
+
+// Draw the neighbour graph whenever a note lands in the panel.
+$("#panel").addEventListener("htmx:afterSwap", renderNeighbours);
 
 function toast(msg) {
   const t = $("#toast");
@@ -848,6 +698,12 @@ $("#panel").addEventListener("click", (evt) => {
   for (const d of $("#panel").querySelectorAll("details.section:not(.empty)")) d.open = open;
 });
 
+$("#panel").addEventListener("click", (evt) => {
+  if (!evt.target.closest(".neighbours-cut button")) return;
+  neighbourGraph.showAll = !neighbourGraph.showAll;
+  renderNeighbours();
+});
+
 document.body.addEventListener("htmx:afterRequest", (evt) => {
   const xhr = evt.detail.xhr;
   if (evt.detail.requestConfig.verb !== "post") return;
@@ -873,11 +729,12 @@ colourBy.addEventListener("change", () => {
   assignSlots();
   collapsed.clear();
   renderLegend();
-  update({ structure: true, relayout: groupBox.checked && "fresh" });
+  update({ structure: true, relayout: groupBox.checked });
+  renderNeighbours(); // node colours follow the colour-by mode
 });
 groupBox.addEventListener("change", () => {
   renderLegend();
-  update({ structure: true, relayout: "fresh" });
+  update({ structure: true, relayout: true });
 });
 $("#legend").addEventListener("click", (evt) => {
   const button = evt.target.closest("button");
@@ -905,7 +762,8 @@ window.addEventListener("popstate", (evt) => {
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
   renderLegend();
   update({ structure: true }); // node colours come from the theme
-  for (const view of Object.values(views)) if (view.mounted) view.theme();
+  if (graphView.mounted) graphView.theme();
+  renderNeighbours();
 });
 
 function connectEvents() {
@@ -919,7 +777,7 @@ function connectEvents() {
 
 (async () => {
   await loadGraph();
-  await showView(activeView);
+  graphView.mount();
   connectEvents();
   if (cfg.initialId) {
     history.replaceState({ id: cfg.initialId }, "", `/note/${cfg.initialId}`);

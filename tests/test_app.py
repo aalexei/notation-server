@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from notation_server.app import create_app
 from notation_server.config import Settings
 
-from .conftest import A, B, C, JOURNAL
+from .conftest import A, B, C, JOURNAL, write
 
 TOKEN = "test-token"
 AUTH = {"X-Notation-Token": TOKEN}
@@ -61,7 +61,18 @@ def test_org_view_rewrites_links(client):
     html = client.get(f"/note/{A}/view").text
     assert f'href="/note/{B}"' in html
     assert f'src="/files/{A}/plot.png"' in html
-    assert "Backlinks" in html
+    # Links and backlinks are drawn as a graph by app.js, from this placeholder.
+    assert f'class="neighbours" data-note-id="{A}"' in html
+    assert "2 links" in html and "1 backlink" in html
+
+
+def test_view_without_links_has_no_neighbour_graph(tree):
+    lonely = "20260108120000"
+    write(tree / lonely / "__lonely.org", "* Nothing linked here\n")
+    with make_client(tree) as c:
+        html = c.get(f"/note/{lonely}/view").text
+    assert 'class="neighbours"' not in html
+    assert "No links to or from this note." in html
 
 
 def test_pdf_view_embeds_file(client):

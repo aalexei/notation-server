@@ -7,11 +7,9 @@
   <link rel="stylesheet" href="/static/app.css">
   <style>{{ highlight_css }}</style>
   <script id="config" type="application/json">{{ config | tojson }}</script>
+  <script src="https://unpkg.com/3d-force-graph@1.80.2/dist/3d-force-graph.min.js"></script>
+  <!-- Cytoscape draws the note panel's graph of neighbours. -->
   <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-  <script src="https://unpkg.com/layout-base@2.0.1/layout-base.js"></script>
-  <script src="https://unpkg.com/cose-base@2.2.0/cose-base.js"></script>
-  <script src="https://unpkg.com/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
-  <!-- 3d-force-graph is loaded by app.js when the 3D tab is first opened. -->
   <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js"></script>
   <script src="/static/app.js" defer></script>
 </head>
@@ -43,13 +41,8 @@
         <div id="legend" role="group" aria-label="Colour legend: click an entry to show or hide its notes"></div>
       </div>
       <div id="views">
-        <div id="view-tabs" role="tablist" aria-label="Graph view">
-          <button type="button" role="tab" id="tab-2d" aria-controls="graph-2d" data-view="2d">2D</button>
-          <button type="button" role="tab" id="tab-3d" aria-controls="graph-3d" data-view="3d">3D</button>
-        </div>
-        <div id="graph-2d" class="graph" role="tabpanel" aria-labelledby="tab-2d"></div>
-        <div id="graph-3d" class="graph" role="tabpanel" aria-labelledby="tab-3d"
-             title="Drag to rotate, scroll to zoom, right-drag to pan" hidden></div>
+        <div id="graph" class="graph" role="img"
+             aria-label="Graph of linked notes. Drag to rotate, scroll to zoom, right-drag to pan."></div>
         <div id="problems" hidden></div>
       </div>
     </section>

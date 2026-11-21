@@ -1,9 +1,9 @@
 # notation-server
 
 Experimental: browse a [notation](../notation) note tree in the browser as
-a graph of linked notes. Clicking a note renders it (Org and Markdown via
-pandoc, PDFs and images inline, other text syntax highlighted), with its
-links, backlinks and attachments.
+a 3D graph of linked notes. Clicking a note renders it (Org and Markdown via
+pandoc, PDFs and images inline, other text syntax highlighted), with a
+small graph of the notes it links to and from, and its attachments.
 
 The server is read-only and listens on localhost only.
 
@@ -14,8 +14,8 @@ uv run notation-server --dir ~/notation        # http://127.0.0.1:8765/
 ```
 
 Needs [uv](https://docs.astral.sh/uv/) and, for Org/Markdown rendering,
-`pandoc` on PATH. The page loads Cytoscape.js (with the fcose layout),
-3d-force-graph (when the 3D tab is first opened) and HTMX from unpkg.
+`pandoc` on PATH. The page loads 3d-force-graph, Cytoscape.js and HTMX
+from unpkg.
 
 ## From Emacs
 
