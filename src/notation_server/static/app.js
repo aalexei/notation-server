@@ -577,7 +577,10 @@ const fgView = {
       .nodeOpacity(0.95)
       .nodeColor((n) => this.nodeColour(n))
       .linkColor((l) => this.linkColour(l))
-      .linkWidth((l) => (this.incident(l) ? 1.2 : l.count > 1 ? Math.min(l.count, 10) * 0.3 : 0))
+      // The library multiplies the colour's alpha by this (default 0.2);
+      // at 1, the alpha in linkColour is the opacity drawn.
+      .linkOpacity(1)
+      .linkWidth((l) => (this.incident(l) ? 0.6 : l.count > 1 ? Math.min(l.count, 10) * 0.3 : 0))
       // One arrowhead per link only; two-way links get none.
       .linkDirectionalArrowLength((l) => (l.both ? 0 : 2.5))
       .linkDirectionalArrowRelPos(1)
@@ -661,8 +664,8 @@ const fgView = {
   },
 
   linkColour(l) {
-    if (this.incident(l)) return css("--text-secondary");
-    return withAlpha(css("--edge"), matches || selectedId ? 0.08 : 0.5);
+    if (this.incident(l)) return withAlpha(css("--text-secondary"), 0.7);
+    return withAlpha(css("--edge"), matches || selectedId ? 0.1 : 0.3);
   },
 
   restyle() {
