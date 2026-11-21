@@ -539,6 +539,7 @@ function renderNeighbours() {
   }
 
   const keep = new Set([id, ...shown]);
+  const ring = [...shown, ...missing.map((m) => MISSING + m)];
   const node = (n, classes = "") => ({
     group: "nodes", data: { id: n.id, title: n.title, colour: colourFor(category(n)) }, classes,
   });
@@ -554,7 +555,8 @@ function renderNeighbours() {
     })),
   ];
   const count = shown.length + missing.length;
-  el.style.height = `${count <= 8 ? 240 : count <= 20 ? 320 : 420}px`;
+  // Kept short: it sits above the note's own content.
+  el.style.height = `${count <= 8 ? 200 : count <= 20 ? 260 : 320}px`;
 
   // Fixed zoom and pan, so scrolling over it scrolls the panel; nodes can still be dragged.
   const cy = (ng.cy = cytoscape({
@@ -565,20 +567,33 @@ function renderNeighbours() {
     userPanningEnabled: false,
     boxSelectionEnabled: false,
     autounselectify: true,
-    layout: {
-      name: "concentric",
-      concentric: (n) => (n.hasClass("centre") ? 2 : 1),
-      levelWidth: () => 1,
-      minNodeSpacing: 28,
-      padding: 24,
-      animate: false,
-    },
+    layout: { name: "preset", fit: false },
   }));
+  // The note in the middle and its neighbours on an ellipse filling the box,
+  // closest first from the top, at a readable zoom. Past 14 they alternate
+  // between an outer and an inner ellipse, to give the labels room.
+  const place = () => {
+    const w = cy.width();
+    const h = cy.height();
+    const rx = Math.max(60, w / 2 - 75); // room for a label either side
+    const ry = Math.max(40, h / 2 - 28); // and for the label below
+    cy.batch(() => {
+      ring.forEach((nid, i) => {
+        const angle = -Math.PI / 2 + (2 * Math.PI * i) / ring.length;
+        const k = ring.length > 14 && i % 2 ? 0.6 : 1;
+        cy.getElementById(nid).position({ x: rx * k * Math.cos(angle), y: ry * k * Math.sin(angle) });
+      });
+      cy.getElementById(id).position({ x: 0, y: 0 });
+    });
+    cy.zoom(1);
+    cy.pan({ x: w / 2, y: h / 2 });
+  };
+  place();
   const clickable = (n) => !n.hasClass("centre") && !n.hasClass("missing");
   cy.on("tap", "node", (evt) => { if (clickable(evt.target)) focusNote(evt.target.id()); });
   cy.on("mouseover", "node", (evt) => { el.style.cursor = clickable(evt.target) ? "pointer" : ""; });
   cy.on("mouseout", "node", () => { el.style.cursor = ""; });
-  ng.observer = new ResizeObserver(() => { cy.resize(); cy.fit(undefined, 24); });
+  ng.observer = new ResizeObserver(() => { cy.resize(); place(); });
   ng.observer.observe(el);
 }
 

@@ -1,4 +1,16 @@
 <article class="note" data-note-id="{{ note.id }}">
+  {# First, so it stays in the same place while hopping from note to note. #}
+  <section class="neighbours-section" aria-label="Linked notes">
+    <p class="neighbours-caption muted">Linked notes ·
+      {{ links | length }} link{{ "" if links | length == 1 else "s" }} ·
+      {{ backlinks | length }} backlink{{ "" if backlinks | length == 1 else "s" }}</p>
+    {% if links or backlinks %}
+      {# Drawn by app.js from the graph data; click a note to open it. #}
+      <div class="neighbours" data-note-id="{{ note.id }}" role="img"
+           aria-label="Graph of this note and the notes it links to or is linked from"></div>
+    {% else %}<p class="muted">No links to or from this note.</p>{% endif %}
+  </section>
+
   <header>
     <h1>{{ note.title }}</h1>
     <div class="meta">
@@ -37,16 +49,6 @@
   </div>
 
   <footer>
-    <section class="neighbours-section">
-      <h2>Linked notes
-        <span class="muted">{{ links | length }} link{{ "" if links | length == 1 else "s" }} ·
-          {{ backlinks | length }} backlink{{ "" if backlinks | length == 1 else "s" }}</span></h2>
-      {% if links or backlinks %}
-        {# Drawn by app.js from the graph data; click a note to open it. #}
-        <div class="neighbours" data-note-id="{{ note.id }}" role="img"
-             aria-label="Graph of this note and the notes it links to or is linked from"></div>
-      {% else %}<p class="muted">No links to or from this note.</p>{% endif %}
-    </section>
     <section>
       <h2>Attachments <span class="muted">({{ attachments | length }})</span></h2>
       {% if attachments %}
