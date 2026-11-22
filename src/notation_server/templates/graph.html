@@ -18,7 +18,13 @@
     <section id="graph-pane">
       <div id="controls">
         <div id="toolbar">
-          <input id="search" type="search" placeholder="Search titles, aliases, ids…" autocomplete="off">
+          <input id="search" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Search titles, aliases, ids · dates: 2026..  ..202609"
+                 title="Words, in any order, highlight notes whose title, aliases or id contain them all; ids start with the creation time, so 2026 or 202609 finds notes from then.
+A range of id beginnings keeps only the notes created in it (both ends included, either open):
+2026.. · from 2026 on
+..202609 · up to the end of September 2026
+20260901..20260930 · 1 to 30 September 2026">
           <label>Colour by
             <select id="colour-by">
               <option value="tag">tag</option>
@@ -33,7 +39,6 @@
               <option value="3">3 hops</option>
             </select>
           </label>
-          <label>Created <input id="from" type="date" aria-label="Created from"> – <input id="to" type="date" aria-label="Created to"></label>
           <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
           <label title="Collapse or expand a group with the button on its legend entry"><input id="group" type="checkbox"> Group by colour</label>
           <span id="stats"></span>

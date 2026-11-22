@@ -26,8 +26,6 @@ const searchInput = $("#search");
 const colourBy = $("#colour-by");
 const depthSelect = $("#depth");
 const hideIsolated = $("#hide-isolated");
-const fromInput = $("#from");
-const toInput = $("#to");
 const groupBox = $("#group");
 
 // Toggled from the legend. A note is hidden if any of its tags is, or its
@@ -180,26 +178,59 @@ function buildModel() {
   model = { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])), neighbours };
 }
 
+// The search box. Words, in any order, match parts of titles, aliases and
+// ids, highlighting the notes; as ids start with their creation time (YYYYMMDDhhmmss), "2026" or
+// "202609" finds the notes from then. A range of id beginnings, A..B, keeps
+// only the notes created in it; both ends are included and either can be
+// left open:
+//
+//   2026..               from 2026 on
+//   ..202609             up to the end of September 2026
+//   20260901..20260930   1 to 30 September 2026
+
+// Split the search box into the words to highlight and the ranges to keep.
+function parseSearch(value) {
+  const words = [];
+  const ranges = [];
+  for (const token of value.split(/\s+/).filter(Boolean)) {
+    const m = token.match(/^(\d*)\.\.(\d*)$/);
+    if (m && (m[1] || m[2])) ranges.push({ from: m[1], to: m[2] });
+    else words.push(token.toLowerCase());
+  }
+  return { words, ranges };
+}
+
+// An id is in a range if it doesn't sort before FROM, and its beginning,
+// as long as TO, doesn't sort after TO.
+const inRange = (id, { from, to }) => (!from || id >= from) && (!to || id.slice(0, to.length) <= to);
+
+// "202609" -> "2026-09", for the range shown next to the note count.
+const showPrefix = (p) => [p.slice(0, 4), p.slice(4, 6), p.slice(6, 8)].filter(Boolean).join("-") + p.slice(8);
+
+function describeRange({ from, to }) {
+  if (!from) return `created up to ${showPrefix(to)}`;
+  if (!to) return `created from ${showPrefix(from)}`;
+  return `created ${showPrefix(from)} – ${showPrefix(to)}`;
+}
+
 function noteFilter() {
-  // Note ids start with their creation date, YYYYMMDD.
-  const from = fromInput.value.replaceAll("-", "");
-  const to = toInput.value.replaceAll("-", "");
+  const { ranges } = parseSearch(searchInput.value);
   return (d) => {
-    const day = d.id.slice(0, 8);
     const tagHidden = d.tags.length ? d.tags.some((t) => hidden.tag.has(t)) : hidden.tag.has(UNTAGGED);
-    return !tagHidden && !hidden.subdir.has(d.subdir || ROOT) && (!from || day >= from) && (!to || day <= to);
+    return !tagHidden && !hidden.subdir.has(d.subdir || ROOT) && ranges.every((r) => inRange(d.id, r));
   };
 }
 
 function computeVisibility() {
   const passes = noteFilter();
-  // Inside a collapsed group, "unlinked" means no links at all.
+  // "Unlinked" is judged on the whole graph: a note with any link at all
+  // stays, even when the notes it links to are filtered out.
   const linked = new Set(graph.edges.flatMap((e) => [e.source, e.target]));
-  const memberShown = (m) => passes(m) && (!hideIsolated.checked || linked.has(m.id));
+  const noteShown = (m) => passes(m) && (!hideIsolated.checked || linked.has(m.id));
   const depth = Number(depthSelect.value);
 
   let shown = new Set(model.nodes
-    .filter((n) => n.id === selectedId || (n.members ? n.members.some(memberShown) : passes(n)))
+    .filter((n) => n.id === selectedId || (n.members ? n.members.some(noteShown) : noteShown(n)))
     .map((n) => n.id));
   if (depth > 0 && model.byId.has(selectedId)) {
     const hood = new Set([selectedId]);
@@ -208,29 +239,26 @@ function computeVisibility() {
     }
     shown = new Set([...shown].filter((id) => hood.has(id)));
   }
-  // Judged after the other filters: a note linked only to hidden notes is unlinked too.
-  if (hideIsolated.checked) {
-    const before = shown;
-    shown = new Set([...before].filter((id) => id === selectedId
-      || [...(model.neighbours.get(id) || [])].some((nb) => before.has(nb))));
-  }
   let count = 0;
   for (const id of shown) {
     const n = model.byId.get(id);
-    count += n.members ? n.members.filter(memberShown).length : 1;
+    count += n.members ? n.members.filter(noteShown).length : 1;
   }
   visible = shown;
-  $("#stats").textContent = `${count} of ${graph.nodes.length} notes`;
+  const { ranges } = parseSearch(searchInput.value);
+  $("#stats").textContent = [`${count} of ${graph.nodes.length} notes`, ...ranges.map(describeRange)].join(" · ");
 }
 
-function matchesQuery(d, q) {
-  if (d.members) return d.members.some((m) => matchesQuery(m, q));
-  return d.title.toLowerCase().includes(q) || d.id.includes(q) || d.aliases.some((a) => a.includes(q));
+// Every word must be part of the title, an alias or the id, in any order.
+function matchesQuery(d, words) {
+  if (d.members) return d.members.some((m) => matchesQuery(m, words));
+  const fields = [d.title, d.id, ...d.aliases].map((s) => s.toLowerCase());
+  return words.every((w) => fields.some((f) => f.includes(w)));
 }
 
 function computeMatches() {
-  const q = searchInput.value.trim().toLowerCase();
-  matches = q ? new Set(model.nodes.filter((n) => matchesQuery(n, q)).map((n) => n.id)) : null;
+  const { words } = parseSearch(searchInput.value);
+  matches = words.length ? new Set(model.nodes.filter((n) => matchesQuery(n, words)).map((n) => n.id)) : null;
 }
 
 // Recompute the model and redraw. `structure`: the nodes or edges changed
@@ -732,13 +760,25 @@ document.body.addEventListener("htmx:afterRequest", (evt) => {
 
 // Controls.
 
-searchInput.addEventListener("input", restyle);
+// Text highlights as you type. Ranges change which notes are shown, so they
+// apply after a pause: typing "20260901.." passes through "2..", "20..".
+let searchRanges = "[]";
+searchInput.addEventListener("input", () => {
+  restyle();
+  clearTimeout(searchInput.timer);
+  searchInput.timer = setTimeout(() => {
+    const key = JSON.stringify(parseSearch(searchInput.value).ranges);
+    if (key === searchRanges) return;
+    searchRanges = key;
+    update({ relayout: true });
+  }, 300);
+});
 searchInput.addEventListener("keydown", (evt) => {
   if (evt.key !== "Enter" || !matches) return;
   const hit = model.nodes.find((n) => matches.has(n.id) && visible.has(n.id));
   if (!hit) return;
-  const q = searchInput.value.trim().toLowerCase();
-  focusNote(hit.members ? hit.members.find((m) => matchesQuery(m, q)).id : hit.id);
+  const { words } = parseSearch(searchInput.value);
+  focusNote(hit.members ? hit.members.find((m) => matchesQuery(m, words)).id : hit.id);
 });
 colourBy.addEventListener("change", () => {
   assignSlots();
@@ -767,7 +807,7 @@ $("#legend").addEventListener("click", (evt) => {
   renderLegend();
   if (!button.classList.contains("more")) update({ relayout: true });
 });
-for (const input of [depthSelect, hideIsolated, fromInput, toInput]) {
+for (const input of [depthSelect, hideIsolated]) {
   input.addEventListener("change", () => update({ relayout: true }));
 }
 window.addEventListener("popstate", (evt) => {
