@@ -1,67 +1,61 @@
 // Graph of notes (3d-force-graph) + note panel (HTMX) with a graph of the
 // note's neighbours (Cytoscape) + live updates (SSE).
 //
-// The controls build one model of the whole graph: which notes and edges
-// exist (after grouping), which are visible, and which match the search;
-// the 3D view draws it. The panel's neighbour graph ignores the controls.
+// The search box builds one model of the whole graph: which notes and
+// edges exist (after collapsing), which are visible, and which match; the
+// 3D view draws it. The panel's neighbour graph ignores the search box.
 "use strict";
 
 const cfg = JSON.parse(document.getElementById("config").textContent);
-const SLOTS = 8; // categorical colour slots; further categories fold into "other"
+const SLOTS = 8; // categorical colour slots; further tags fold into "other"
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const GROUP = "group:"; // id prefix of collapsed groups
+const UNTAGGED = "(untagged)";
 
 let selectedId = null;
 let graph = { nodes: [], edges: [], problems: [] };
-let slotOf = new Map(); // category -> slot index, fixed from the whole corpus
-let collapsed = new Set(); // categories drawn as a single node while grouping
+let slotOf = new Map(); // tag -> colour slot, fixed from the whole corpus
+let tagCounts = new Map(); // tag -> number of notes with it
 
 // What the 3D view draws: `nodes` are notes and collapsed groups.
 let model = { nodes: [], edges: [], byId: new Map(), neighbours: new Map() };
 let visible = new Set(); // ids of visible nodes
-let matches = null; // ids matching the search, or null when not searching
+let matches = null; // ids matching the search words, or null when there are none
 
 const $ = (sel) => document.querySelector(sel);
 const searchInput = $("#search");
-const colourBy = $("#colour-by");
 const depthSelect = $("#depth");
 const hideIsolated = $("#hide-isolated");
-const groupBox = $("#group");
-
-// Toggled from the legend. A note is hidden if any of its tags is, or its
-// folder is; "(untagged)" and "(root)" stand for no tag and the top folder.
-const UNTAGGED = "(untagged)";
-const ROOT = "(root)";
-const hidden = { tag: new Set(cfg.excludeTags), subdir: new Set() };
-let legendExpanded = false; // whether the uncoloured entries are listed
+const clusterBox = $("#cluster");
 
 const idOf = (end) => (typeof end === "object" ? end.id : end);
 
-function category(node) {
-  if (colourBy.value === "subdir") return node.subdir || ROOT;
-  return node.tags[0] || UNTAGGED;
+// A note's tags, as used everywhere here: its own tags, then one for each
+// level of the folder it is filed in, ending in "/". A note filed in
+// journal/2025 also has the tags "journal/" and "journal/2025/".
+function tagsOf(note) {
+  const parts = note.subdir ? note.subdir.split("/") : [];
+  const folders = parts.map((_, i) => `${parts.slice(0, i + 1).join("/")}/`);
+  return [...note.tags, ...folders].map((t) => t.toLowerCase());
 }
 
-// Only the categories with a colour of their own are grouped.
-function groupOf(node) {
-  const cat = category(node);
-  return groupBox.checked && slotOf.has(cat) ? cat : null;
-}
+// A note's colour comes from its first tag.
+const category = (note) => note.allTags[0] || UNTAGGED;
 
-// Colour follows the category, not its rank in the current view: slots are
-// assigned once per colour-by mode, from the whole corpus, by frequency.
+// Colour follows the tag, not its rank in the current view: slots go to the
+// tags that are most often first, once, from the whole corpus.
 function assignSlots() {
   const counts = new Map();
   for (const n of graph.nodes) counts.set(category(n), (counts.get(category(n)) || 0) + 1);
   const ranked = [...counts.entries()]
-    .filter(([c]) => c !== UNTAGGED && c !== ROOT)
+    .filter(([c]) => c !== UNTAGGED)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, SLOTS);
   slotOf = new Map(ranked.map(([c], i) => [c, i]));
 }
 
-function colourFor(cat) {
-  return slotOf.has(cat) ? css(`--series-${slotOf.get(cat) + 1}`) : css("--other");
+function colourFor(tag) {
+  return slotOf.has(tag) ? css(`--series-${slotOf.get(tag) + 1}`) : css("--other");
 }
 
 function withAlpha(hex, alpha) {
@@ -70,60 +64,50 @@ function withAlpha(hex, alpha) {
   return `rgba(${r},${g},${b},${alpha})`;
 }
 
-// How many notes have each tag (any of their tags) or are in each folder.
-function legendCounts(mode) {
-  const counts = new Map();
-  const add = (k) => counts.set(k, (counts.get(k) || 0) + 1);
-  for (const n of graph.nodes) {
-    if (mode === "subdir") add(n.subdir || ROOT);
-    else if (n.tags.length) n.tags.forEach(add);
-    else add(UNTAGGED);
-  }
-  return counts;
-}
-
-// The legend lists the tags (or folders) of the colour-by mode: coloured
-// ones first, then untagged notes; the rest are listed on request, except
-// hidden ones, which always are. Clicking an entry shows or hides its
-// notes; while grouping, coloured entries also get a collapse button.
-function renderLegend() {
-  const mode = colourBy.value;
-  const other = mode === "tag" ? "subdir" : "tag";
-  const counts = legendCounts(mode);
-  const label = (k) => ({ [UNTAGGED]: "untagged", [ROOT]: "top folder" })[k] || k;
-  const entry = (k) => {
-    const shown = !hidden[mode].has(k);
-    const colour = slotOf.has(k) ? colourFor(k) : css("--other");
-    const fold = groupBox.checked && slotOf.has(k)
-      ? `<button type="button" class="fold" data-group="${escapeHtml(k)}" aria-pressed="${collapsed.has(k)}"
-           title="${collapsed.has(k) ? "Expand" : "Collapse"} this group">${collapsed.has(k) ? "+" : "−"}</button>`
-      : "";
-    return `<span class="entry${shown ? "" : " off"}"><button type="button" class="toggle" data-key="${escapeHtml(k)}"
-        aria-pressed="${shown}" title="${shown ? "Hide" : "Show"} these notes"><span class="swatch" style="background:${colour}"></span>${
-        escapeHtml(label(k))} <span class="count">${counts.get(k)}</span></button>${fold}</span>`;
-  };
-  const byUse = (a, b) => counts.get(b) - counts.get(a) || a.localeCompare(b);
-  const first = [...slotOf.keys(), UNTAGGED, ROOT].filter((k) => counts.has(k));
-  const rest = [...counts.keys()].filter((k) => !first.includes(k)).sort(byUse);
-  const listed = legendExpanded ? rest : rest.filter((k) => hidden[mode].has(k));
-
-  const items = [...first, ...listed].map(entry);
-  if (rest.length > listed.length || legendExpanded) {
-    items.push(`<button type="button" class="more" aria-expanded="${legendExpanded}">${
-      legendExpanded ? "fewer" : `+${rest.length - listed.length} more`}</button>`);
-  }
-  if (hidden[mode].size) items.push(`<button type="button" class="reset" data-reset="${mode}">show all</button>`);
-  // Hidden folders still apply when colouring by tag, and the other way round.
-  const n = hidden[other].size;
-  if (n) {
-    items.push(`<button type="button" class="reset" data-reset="${other}">${n} hidden ${
-      other === "tag" ? "tag" : "folder"}${n > 1 ? "s" : ""} · show</button>`);
-  }
-  $("#legend").innerHTML = items.join("");
-}
-
 function escapeHtml(s) {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
+// The search box, the one place the graph is filtered:
+//
+//   words                highlight the notes whose title, aliases or id
+//                        contain them all, in any order
+//   A..B                 keep the notes created in a range of id beginnings
+//                        (ids start YYYYMMDDhhmmss), both ends included,
+//                        either open: 2026..  ..202609  20260901..20260930
+//   #tag  -#tag  ~#tag   keep only / hide / collapse into one node the notes
+//                        with a tag; folders are tags ending in "/": -#journal/
+//
+// A note in two collapsed tags goes into the one named first.
+
+function parseSearch(value) {
+  const s = { words: [], ranges: [], only: [], hide: [], fold: [], unknown: [] };
+  for (const token of value.split(/\s+/).filter(Boolean)) {
+    let m = token.match(/^(\d*)\.\.(\d*)$/);
+    if (m && (m[1] || m[2])) { s.ranges.push({ from: m[1], to: m[2] }); continue; }
+    m = token.match(/^([-~]?)#(.*)$/);
+    if (!m) { s.words.push(token.toLowerCase()); continue; }
+    const tag = m[2].toLowerCase();
+    if (!tag) continue; // a "#" still being typed
+    // Unknown tags (typos, or a tag half typed) are reported, not applied.
+    if (!tagCounts.has(tag)) s.unknown.push(m[1] + "#" + tag);
+    else ({ "": s.only, "-": s.hide, "~": s.fold })[m[1]].push(tag);
+  }
+  s.fold = [...new Set(s.fold)];
+  return s;
+}
+
+// An id is in a range if it doesn't sort before FROM, and its beginning,
+// as long as TO, doesn't sort after TO.
+const inRange = (id, { from, to }) => (!from || id >= from) && (!to || id.slice(0, to.length) <= to);
+
+// "202609" -> "2026-09", for the range shown next to the note count.
+const showPrefix = (p) => [p.slice(0, 4), p.slice(4, 6), p.slice(6, 8)].filter(Boolean).join("-") + p.slice(8);
+
+function describeRange({ from, to }) {
+  if (!from) return `created up to ${showPrefix(to)}`;
+  if (!to) return `created from ${showPrefix(from)}`;
+  return `created ${showPrefix(from)} – ${showPrefix(to)}`;
 }
 
 // The model.
@@ -143,12 +127,13 @@ function mergedEdges(links) {
 }
 
 function buildModel() {
-  // The notes of a collapsed group are replaced by one node standing in for them.
+  // The notes of a collapsed tag are replaced by one node standing in for them.
+  const { fold } = parseSearch(searchInput.value);
   const standIn = new Map();
   const members = new Map();
   for (const n of graph.nodes) {
-    const g = groupOf(n);
-    if (g === null || !collapsed.has(g)) continue;
+    const g = fold.find((t) => n.allTags.includes(t));
+    if (!g) continue;
     standIn.set(n.id, GROUP + g);
     if (!members.has(g)) members.set(g, []);
     members.get(g).push(n);
@@ -167,58 +152,22 @@ function buildModel() {
   const degree = (id) => (neighbours.get(id) || new Set()).size;
 
   const nodes = [
-    ...[...members].map(([g, ms]) => ({
-      id: GROUP + g, cat: g, title: `${g} (${ms.length})`, colour: colourFor(g),
-      tags: [], aliases: [], members: ms, size: ms.length, degree: degree(GROUP + g),
+    ...fold.filter((g) => members.has(g)).map((g) => ({
+      id: GROUP + g, cat: g, title: `${g} (${members.get(g).length})`, colour: colourFor(g),
+      tags: [], allTags: [], aliases: [], members: members.get(g), size: members.get(g).length, degree: degree(GROUP + g),
     })),
     ...graph.nodes.filter((n) => !standIn.has(n.id)).map((n) => ({
-      ...n, colour: colourFor(category(n)), degree: degree(n.id), groupCat: groupOf(n),
+      ...n, colour: colourFor(category(n)), degree: degree(n.id),
+      clusterCat: slotOf.has(category(n)) ? category(n) : null,
     })),
   ];
   model = { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])), neighbours };
 }
 
-// The search box. Words, in any order, match parts of titles, aliases and
-// ids, highlighting the notes; as ids start with their creation time (YYYYMMDDhhmmss), "2026" or
-// "202609" finds the notes from then. A range of id beginnings, A..B, keeps
-// only the notes created in it; both ends are included and either can be
-// left open:
-//
-//   2026..               from 2026 on
-//   ..202609             up to the end of September 2026
-//   20260901..20260930   1 to 30 September 2026
-
-// Split the search box into the words to highlight and the ranges to keep.
-function parseSearch(value) {
-  const words = [];
-  const ranges = [];
-  for (const token of value.split(/\s+/).filter(Boolean)) {
-    const m = token.match(/^(\d*)\.\.(\d*)$/);
-    if (m && (m[1] || m[2])) ranges.push({ from: m[1], to: m[2] });
-    else words.push(token.toLowerCase());
-  }
-  return { words, ranges };
-}
-
-// An id is in a range if it doesn't sort before FROM, and its beginning,
-// as long as TO, doesn't sort after TO.
-const inRange = (id, { from, to }) => (!from || id >= from) && (!to || id.slice(0, to.length) <= to);
-
-// "202609" -> "2026-09", for the range shown next to the note count.
-const showPrefix = (p) => [p.slice(0, 4), p.slice(4, 6), p.slice(6, 8)].filter(Boolean).join("-") + p.slice(8);
-
-function describeRange({ from, to }) {
-  if (!from) return `created up to ${showPrefix(to)}`;
-  if (!to) return `created from ${showPrefix(from)}`;
-  return `created ${showPrefix(from)} – ${showPrefix(to)}`;
-}
-
 function noteFilter() {
-  const { ranges } = parseSearch(searchInput.value);
-  return (d) => {
-    const tagHidden = d.tags.length ? d.tags.some((t) => hidden.tag.has(t)) : hidden.tag.has(UNTAGGED);
-    return !tagHidden && !hidden.subdir.has(d.subdir || ROOT) && ranges.every((r) => inRange(d.id, r));
-  };
+  const { ranges, only, hide } = parseSearch(searchInput.value);
+  return (d) => !hide.some((t) => d.allTags.includes(t)) && only.every((t) => d.allTags.includes(t))
+    && ranges.every((r) => inRange(d.id, r));
 }
 
 function computeVisibility() {
@@ -245,8 +194,12 @@ function computeVisibility() {
     count += n.members ? n.members.filter(noteShown).length : 1;
   }
   visible = shown;
-  const { ranges } = parseSearch(searchInput.value);
-  $("#stats").textContent = [`${count} of ${graph.nodes.length} notes`, ...ranges.map(describeRange)].join(" · ");
+  const { ranges, unknown } = parseSearch(searchInput.value);
+  $("#stats").textContent = [
+    `${count} of ${graph.nodes.length} notes`,
+    ...ranges.map(describeRange),
+    ...(unknown.length ? [`no such tag: ${unknown.join(" ")}`] : []),
+  ].join(" · ");
 }
 
 // Every word must be part of the title, an alias or the id, in any order.
@@ -262,7 +215,7 @@ function computeMatches() {
 }
 
 // Recompute the model and redraw. `structure`: the nodes or edges changed
-// (data, grouping, colours). `relayout`: reheat the simulation.
+// (data, collapsing, colours). `relayout`: reheat the simulation.
 function update({ structure = false, relayout = false } = {}) {
   if (structure) buildModel();
   computeVisibility();
@@ -275,30 +228,70 @@ function restyle() {
   if (graphView.mounted) graphView.restyle();
 }
 
-function toggleGroup(cat) {
-  if (!collapsed.delete(cat)) collapsed.add(cat);
+// Apply the search box. Collapsing changes the model's structure, the
+// other terms only what is shown; neither is redone if unchanged.
+const applied = { filters: null, fold: null };
+function applySearch() {
+  const { ranges, only, hide, fold } = parseSearch(searchInput.value);
+  const filters = JSON.stringify({ ranges, only, hide });
+  const folds = JSON.stringify(fold);
   renderLegend();
-  update({ structure: true, relayout: true });
+  if (folds !== applied.fold) {
+    Object.assign(applied, { filters, fold: folds });
+    update({ structure: true, relayout: true });
+  } else if (filters !== applied.filters) {
+    applied.filters = filters;
+    update({ relayout: true });
+  } else {
+    restyle();
+  }
+}
+
+// Add or remove one term ("-#ref", "~#project") in the search box and apply it.
+function setTerm(term, on) {
+  const tokens = searchInput.value.split(/\s+/).filter(Boolean);
+  const has = tokens.some((t) => t.toLowerCase() === term);
+  const rest = tokens.filter((t) => t.toLowerCase() !== term);
+  searchInput.value = [...rest, ...((on ?? !has) ? [term] : [])].join(" ");
+  applySearch();
+}
+
+// The legend: the coloured tags and "other". Clicking a tag hides or shows
+// its notes (-#tag in the search box); shift-clicking collapses or expands
+// them (~#tag). How it looks follows the search box.
+function renderLegend() {
+  const { only, hide, fold } = parseSearch(searchInput.value);
+  const swatch = (colour) => `<span class="swatch" style="background:${colour}"></span>`;
+  const items = [...slotOf.keys()].map((t) => {
+    const off = hide.includes(t);
+    const folded = fold.includes(t);
+    const classes = ["entry", off && "off", folded && "folded", only.includes(t) && "only"].filter(Boolean).join(" ");
+    return `<button type="button" class="${classes}" data-tag="${escapeHtml(t)}" aria-pressed="${!off}"
+        title="Click to ${off ? "show" : "hide"}, shift-click to ${folded ? "expand" : "collapse"}">${
+        swatch(colourFor(t))}${escapeHtml(t)} <span class="count">${tagCounts.get(t) || 0}</span></button>`;
+  });
+  items.push(`<span class="entry other">${swatch(css("--other"))}other</span>`);
+  $("#legend").innerHTML = items.join("");
 }
 
 // The 3D graph.
 
-// Pull the notes of each group towards the group's centroid while
-// grouping, so each tag (or folder) forms its own region.
+// With "Cluster by colour", pull the notes of each colour towards their
+// centroid, so each coloured tag forms its own region.
 function clusterForce() {
   let nodes = [];
   function force(alpha) {
-    if (!groupBox.checked) return;
+    if (!clusterBox.checked) return;
     const centres = new Map();
     for (const n of nodes) {
-      if (!n.groupCat) continue;
-      let c = centres.get(n.groupCat);
-      if (!c) centres.set(n.groupCat, (c = { x: 0, y: 0, z: 0, count: 0 }));
+      if (!n.clusterCat) continue;
+      let c = centres.get(n.clusterCat);
+      if (!c) centres.set(n.clusterCat, (c = { x: 0, y: 0, z: 0, count: 0 }));
       c.x += n.x; c.y += n.y; c.z += n.z || 0; c.count++;
     }
     const k = alpha * 0.25;
     for (const n of nodes) {
-      const c = n.groupCat && centres.get(n.groupCat);
+      const c = n.clusterCat && centres.get(n.clusterCat);
       if (!c || c.count < 2) continue;
       n.vx += (c.x / c.count - n.x) * k;
       n.vy += (c.y / c.count - n.y) * k;
@@ -326,7 +319,7 @@ const graphView = {
   nodeById: new Map(),
   lastPos: new Map(), // positions of notes folded into a collapsed group
   links: [],
-  shownKey: "",
+  shownKey: null, // the visible ids last handed over; null when they must be again
 
   get mounted() { return this.fg !== null; },
 
@@ -341,8 +334,8 @@ const graphView = {
       .showNavInfo(false)
       .nodeId("id")
       .nodeLabel((n) => `<div class="node-tip">${escapeHtml(n.title)}<br><span>${n.members
-        ? "group · click to expand"
-        : n.id + (n.tags.length ? " · " + escapeHtml(n.tags.join(" ")) : "")}</span></div>`)
+        ? "collapsed · click to expand"
+        : n.id + (n.allTags.length ? " · " + escapeHtml(n.allTags.join(" ")) : "")}</span></div>`)
       .nodeVal((n) => (n.members ? 4 + n.size / 2 : 1 + n.degree))
       .nodeRelSize(3)
       .nodeOpacity(0.95)
@@ -355,7 +348,7 @@ const graphView = {
       // One arrowhead per link only; two-way links get none.
       .linkDirectionalArrowLength((l) => (l.both ? 0 : 2.5))
       .linkDirectionalArrowRelPos(1)
-      .onNodeClick((n) => (n.members ? toggleGroup(n.cat) : focusNote(n.id)))
+      .onNodeClick((n) => (n.members ? setTerm(`~#${n.cat}`, false) : focusNote(n.id)))
       .onNodeHover((n) => {
         this.hoverId = n ? n.id : null;
         el.style.cursor = n ? "pointer" : "";
@@ -397,7 +390,9 @@ const graphView = {
       this.nodeById.set(n.id, node);
     }
     this.links = model.edges.map((e) => ({ ...e }));
-    this.shownKey = ""; // links are new objects, so they must be handed over
+    // Links are new objects, so they must be handed over. ("" would be
+    // taken for an empty view, and an empty view would then never be drawn.)
+    this.shownKey = null;
   },
 
   render({ structure = false, relayout = false }) {
@@ -463,7 +458,7 @@ const graphView = {
 };
 
 // The note panel's graph of the open note and its nearest neighbours: every
-// note it links to or that links to it, whatever the controls hide. Past
+// note it links to or that links to it, whatever the search box hides. Past
 // NEIGHBOUR_LIMIT, only the closest are drawn unless asked for all.
 
 const NEIGHBOUR_LIMIT = 30;
@@ -631,10 +626,15 @@ async function loadGraph() {
   // Fetch everything and filter client-side, so colours stay stable.
   const res = await fetch("/api/graph?exclude_tags=");
   graph = await res.json();
+  tagCounts = new Map();
+  for (const n of graph.nodes) {
+    n.allTags = tagsOf(n);
+    for (const t of n.allTags) tagCounts.set(t, (tagCounts.get(t) || 0) + 1);
+  }
   assignSlots();
-  renderLegend();
   renderProblems();
-  update({ structure: true });
+  Object.assign(applied, { filters: null, fold: null }); // the data changed, so redo everything
+  applySearch();
 }
 
 function renderProblems() {
@@ -649,11 +649,11 @@ function renderProblems() {
 async function focusNote(id, { push = true } = {}) {
   selectedId = id;
   if (push && location.pathname !== `/note/${id}`) history.pushState({ id }, "", `/note/${id}`);
-  // Opening a note inside a collapsed group expands the group.
+  // A note inside a collapsed group can't be shown, so its groups are expanded.
   const note = graph.nodes.find((n) => n.id === id);
-  const expand = Boolean(note && collapsed.delete(groupOf(note)));
-  if (expand) renderLegend();
-  update({ structure: expand, relayout: expand || Number(depthSelect.value) > 0 });
+  const { fold } = parseSearch(searchInput.value);
+  for (const t of fold) if (note && note.allTags.includes(t)) setTerm(`~#${t}`, false);
+  update({ relayout: Number(depthSelect.value) > 0 });
   if (graphView.mounted) graphView.focus(id);
   await loadPanel(id);
 }
@@ -758,55 +758,96 @@ document.body.addEventListener("htmx:afterRequest", (evt) => {
   }
 });
 
+// Tag suggestions, while a tag is being typed after #, -# or ~#.
+
+const suggest = { el: $("#suggest"), tags: [], active: 0 };
+
+// The tag being typed at the caret: where it starts and what is typed so far.
+function tagAtCaret() {
+  const before = searchInput.value.slice(0, searchInput.selectionStart);
+  const m = before.match(/(?:^|\s)[-~]?#(\S*)$/);
+  return m ? { start: before.length - m[1].length, typed: m[1].toLowerCase() } : null;
+}
+
+function hideSuggestions() {
+  suggest.el.hidden = true;
+  searchInput.setAttribute("aria-expanded", "false");
+  searchInput.removeAttribute("aria-activedescendant");
+}
+
+function renderSuggestions() {
+  const at = tagAtCaret();
+  if (!at) { hideSuggestions(); return; }
+  const starts = (t) => (t.startsWith(at.typed) ? 1 : 0);
+  suggest.tags = [...tagCounts.keys()].filter((t) => t.includes(at.typed))
+    .sort((a, b) => starts(b) - starts(a) || tagCounts.get(b) - tagCounts.get(a) || a.localeCompare(b))
+    .slice(0, 8);
+  if (!suggest.tags.length) { hideSuggestions(); return; }
+  suggest.active = Math.min(suggest.active, suggest.tags.length - 1);
+  suggest.el.innerHTML = suggest.tags.map((t, i) => `<li role="option" id="suggest-${i}" data-index="${i}"
+      aria-selected="${i === suggest.active}"><span class="swatch" style="background:${colourFor(t)}"></span>${
+      escapeHtml(t)} <span class="count">${tagCounts.get(t)}</span></li>`).join("");
+  suggest.el.hidden = false;
+  searchInput.setAttribute("aria-expanded", "true");
+  searchInput.setAttribute("aria-activedescendant", `suggest-${suggest.active}`);
+}
+
+function acceptSuggestion(i) {
+  const at = tagAtCaret();
+  if (!at) return;
+  const value = searchInput.value;
+  let end = searchInput.selectionStart;
+  while (end < value.length && !/\s/.test(value[end])) end++;
+  const insert = `${suggest.tags[i]} `;
+  searchInput.value = value.slice(0, at.start) + insert + value.slice(end).replace(/^\s+/, "");
+  const caret = at.start + insert.length;
+  searchInput.setSelectionRange(caret, caret);
+  hideSuggestions();
+  applySearch();
+}
+
+suggest.el.addEventListener("mousedown", (evt) => evt.preventDefault()); // keep the focus in the box
+suggest.el.addEventListener("click", (evt) => {
+  const li = evt.target.closest("li[data-index]");
+  if (li) acceptSuggestion(Number(li.dataset.index));
+});
+
 // Controls.
 
-// Text highlights as you type. Ranges change which notes are shown, so they
-// apply after a pause: typing "20260901.." passes through "2..", "20..".
-let searchRanges = "[]";
+// Words highlight as you type; the other terms change which notes are
+// shown, so they apply after a pause (typing "#project" passes through "#p").
 searchInput.addEventListener("input", () => {
+  suggest.active = 0;
+  renderSuggestions();
   restyle();
   clearTimeout(searchInput.timer);
-  searchInput.timer = setTimeout(() => {
-    const key = JSON.stringify(parseSearch(searchInput.value).ranges);
-    if (key === searchRanges) return;
-    searchRanges = key;
-    update({ relayout: true });
-  }, 300);
+  searchInput.timer = setTimeout(applySearch, 300);
 });
+searchInput.addEventListener("click", renderSuggestions);
+searchInput.addEventListener("blur", hideSuggestions);
 searchInput.addEventListener("keydown", (evt) => {
-  if (evt.key !== "Enter" || !matches) return;
+  if (!suggest.el.hidden) {
+    const n = suggest.tags.length;
+    const move = { ArrowDown: 1, ArrowUp: n - 1 }[evt.key];
+    if (move) { evt.preventDefault(); suggest.active = (suggest.active + move) % n; renderSuggestions(); return; }
+    if (evt.key === "Enter" || evt.key === "Tab") { evt.preventDefault(); acceptSuggestion(suggest.active); return; }
+    // Without preventDefault, Escape would also clear the whole search box.
+    if (evt.key === "Escape") { evt.preventDefault(); hideSuggestions(); return; }
+  }
+  if (evt.key !== "Enter") return;
+  clearTimeout(searchInput.timer);
+  applySearch();
+  if (!matches) return;
   const hit = model.nodes.find((n) => matches.has(n.id) && visible.has(n.id));
   if (!hit) return;
   const { words } = parseSearch(searchInput.value);
   focusNote(hit.members ? hit.members.find((m) => matchesQuery(m, words)).id : hit.id);
 });
-colourBy.addEventListener("change", () => {
-  assignSlots();
-  collapsed.clear();
-  renderLegend();
-  update({ structure: true, relayout: groupBox.checked });
-  renderNeighbours(); // node colours follow the colour-by mode
-});
-groupBox.addEventListener("change", () => {
-  renderLegend();
-  update({ structure: true, relayout: true });
-});
 $("#legend").addEventListener("click", (evt) => {
-  const button = evt.target.closest("button");
-  if (!button) return;
-  const { key, group, reset } = button.dataset;
-  if (group !== undefined) { toggleGroup(group); return; }
-  if (button.classList.contains("more")) {
-    legendExpanded = !legendExpanded;
-  } else if (key !== undefined) {
-    const set = hidden[colourBy.value];
-    if (!set.delete(key)) set.add(key);
-  } else if (reset) {
-    hidden[reset].clear();
-  }
-  renderLegend();
-  if (!button.classList.contains("more")) update({ relayout: true });
+  const button = evt.target.closest("button[data-tag]");
+  if (button) setTerm(`${evt.shiftKey ? "~" : "-"}#${button.dataset.tag}`);
 });
+clusterBox.addEventListener("change", () => update({ relayout: true }));
 for (const input of [depthSelect, hideIsolated]) {
   input.addEventListener("change", () => update({ relayout: true }));
 }
@@ -831,6 +872,8 @@ function connectEvents() {
 }
 
 (async () => {
+  // The tags hidden at start (--exclude-tags) are written into the search box.
+  searchInput.value = cfg.excludeTags.map((t) => `-#${t.toLowerCase()}`).join(" ");
   await loadGraph();
   graphView.mount();
   connectEvents();

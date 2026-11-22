@@ -18,19 +18,21 @@
     <section id="graph-pane">
       <div id="controls">
         <div id="toolbar">
-          <input id="search" type="search" autocomplete="off" spellcheck="false"
-                 placeholder="Search titles, aliases, ids · dates: 2026..  ..202609"
-                 title="Words, in any order, highlight notes whose title, aliases or id contain them all; ids start with the creation time, so 2026 or 202609 finds notes from then.
-A range of id beginnings keeps only the notes created in it (both ends included, either open):
+          <span class="search-box">
+            <input id="search" type="search" autocomplete="off" spellcheck="false"
+                   role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false"
+                   placeholder="words  #tag  -#tag  ~#tag  2026..  ..202609"
+                   title="words · highlight notes whose title, aliases or id contain them all, in any order
+#tag · only notes with this tag
+-#tag · hide notes with this tag
+~#tag · collapse notes with this tag into one node
+Folders are tags ending in /, e.g. -#journal/
+A..B · only notes created in a range of id beginnings (YYYYMMDDhhmmss), either end open:
 2026.. · from 2026 on
 ..202609 · up to the end of September 2026
 20260901..20260930 · 1 to 30 September 2026">
-          <label>Colour by
-            <select id="colour-by">
-              <option value="tag">tag</option>
-              <option value="subdir">folder</option>
-            </select>
-          </label>
+            <ul id="suggest" role="listbox" aria-label="Tags" hidden></ul>
+          </span>
           <label>Show
             <select id="depth">
               <option value="0">all notes</option>
@@ -40,10 +42,11 @@ A range of id beginnings keeps only the notes created in it (both ends included,
             </select>
           </label>
           <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
-          <label title="Collapse or expand a group with the button on its legend entry"><input id="group" type="checkbox"> Group by colour</label>
+          <label title="Pull notes of the same colour together"><input id="cluster" type="checkbox"> Cluster by colour</label>
           <span id="stats"></span>
         </div>
-        <div id="legend" role="group" aria-label="Colour legend: click an entry to show or hide its notes"></div>
+        <div id="legend" role="group"
+             aria-label="Colour legend: click a tag to hide or show its notes, shift-click to collapse or expand them"></div>
       </div>
       <div id="views">
         <div id="graph" class="graph" role="img"

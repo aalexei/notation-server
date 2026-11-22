@@ -17,6 +17,24 @@ Needs [uv](https://docs.astral.sh/uv/) and, for Org/Markdown rendering,
 `pandoc` on PATH. The page loads 3d-force-graph, Cytoscape.js and HTMX
 from unpkg.
 
+## Searching
+
+The search box is the one place the graph is filtered. Terms combine:
+
+| Term | |
+|---|---|
+| `word` | highlight notes whose title, aliases or id contain every word, in any order |
+| `#tag` | only notes with this tag |
+| `-#tag` | hide notes with this tag |
+| `~#tag` | collapse notes with this tag into one node |
+| `2026..` `..202609` `20260901..20260930` | only notes created in a range of id beginnings (`YYYYMMDDhhmmss`); either end open |
+
+Folders count as tags ending in `/`, one per level: a note filed in
+`journal/2025` has the tags `journal/` and `journal/2025/`. A note's
+colour comes from its first tag. Clicking a legend entry adds or removes
+`-#tag`; shift-clicking adds or removes `~#tag`. The tags given with
+`--exclude-tags` (default `journal`) start out as `-#tag`.
+
 ## From Emacs
 
 ```elisp
