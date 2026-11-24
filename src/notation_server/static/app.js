@@ -363,7 +363,7 @@ const graphView = {
       // The library multiplies the colour's alpha by this (default 0.2);
       // at 1, the alpha in linkColour is the opacity drawn.
       .linkOpacity(1)
-      .linkWidth((l) => (this.incident(l) ? 0.6 : l.count > 1 ? Math.min(l.count, 10) * 0.3 : 0))
+      .linkWidth((l) => (this.incident(l) ? 0.8 : l.count > 1 ? Math.min(l.count, 10) * 0.4 : 0.4))
       // One arrowhead per link only; two-way links get none.
       .linkDirectionalArrowLength((l) => (l.both ? 0 : 2.5))
       .linkDirectionalArrowRelPos(1)
@@ -436,7 +436,7 @@ const graphView = {
     const sprite = new this.SpriteText(n.title);
     sprite.material.depthWrite = false; // keep the text's background transparent
     sprite.textHeight = 4;
-    sprite.center.y = -0.6; // above the node
+    sprite.center.y = -2.0; // above the node
     sprite.color = this.titleColour(n);
     this.titles.set(n.id, sprite);
     return sprite;
