@@ -35,13 +35,81 @@ colour comes from its first tag. Clicking a legend entry adds or removes
 `-#tag`; shift-clicking adds or removes `~#tag`. The tags given with
 `--exclude-tags` (default `journal`) start out as `-#tag`.
 
-## From Emacs
+## Installing in Emacs
+
+notation-server needs [notation](https://github.com/aalexei/notation),
+so install that first. Either way below, [uv](https://docs.astral.sh/uv/)
+must be on Emacs's `exec-path` (and `pandoc` for Org/Markdown notes). For
+the "Edit in Emacs" button, the Emacs server must be running
+(`(server-start)`).
+
+### use-package with `:vc` (Emacs 30+)
+
+```elisp
+(use-package notation
+  :vc (:url "https://github.com/aalexei/notation" :rev :newest))
+
+(use-package notation-server
+  :vc (:url "https://github.com/aalexei/notation-server" :rev :newest)
+  :defer t)   ; the commands below are autoloaded
+```
+
+`:vc` clones the whole repository, Python server included, and
+`notation-server-start` runs it from there with `uv run`. The first start
+takes a little longer while uv sets up its environment. Update with
+`M-x package-vc-upgrade`.
+
+### straight.el or Doom
+
+These link only the `.el` files into their build directory, so the
+server can't be run from next to them. Install it as a command instead:
+
+```sh
+uv tool install git+https://github.com/aalexei/notation-server
+```
+
+and tell notation-server to use it. With straight.el:
+
+```elisp
+(use-package notation
+  :straight (:host github :repo "aalexei/notation"))
+
+(use-package notation-server
+  :straight (:host github :repo "aalexei/notation-server")
+  :defer t
+  :custom (notation-server-command '("notation-server")))
+```
+
+With Doom, in `packages.el`:
+
+```elisp
+(package! notation :recipe (:host github :repo "aalexei/notation"))
+(package! notation-server :recipe (:host github :repo "aalexei/notation-server"))
+```
+
+and in `config.el`:
+
+```elisp
+(use-package! notation-server
+  :defer t
+  :custom (notation-server-command '("notation-server")))
+```
+
+`uv tool install` puts the command in `~/.local/bin`. If Emacs doesn't
+find it (common for the macOS GUI app, which doesn't read your shell's
+`PATH`), give the full path:
+`(list (expand-file-name "~/.local/bin/notation-server"))`. Update the
+server with `uv tool upgrade notation-server`, separately from the Emacs
+package.
+
+### From a checkout
 
 ```elisp
 (add-to-list 'load-path "~/projects/notation-server")
 (require 'notation-server)   ; needs notation.el loaded
-(server-start)               ; for the "Edit in Emacs" button
 ```
+
+## Using it from Emacs
 
 - `M-x notation-server-start` / `notation-server-stop`
 - `M-x notation-server-browse`: show the current note in the open tab
