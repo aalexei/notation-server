@@ -1,7 +1,7 @@
 ;;; notation-server.el --- Browse notation notes as a graph in a web browser -*- lexical-binding: t; -*-
 
 ;; Author: You
-;; Version: 0.1.0
+;; Version: 0.2.0
 ;; Package-Requires: ((emacs "27.1") (notation "0.3.2"))
 ;; Keywords: outlines, hypermedia
 
