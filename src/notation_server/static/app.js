@@ -27,6 +27,20 @@ const searchInput = $("#search");
 const depthSelect = $("#depth");
 const hideIsolated = $("#hide-isolated");
 const clusterBox = $("#cluster");
+const titlesBox = $("#titles");
+const flyBox = $("#fly");
+
+// Titles and fly controls are remembered between visits.
+const VIEW_PREFS_KEY = "notation-server.graphView";
+const viewPrefs = JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) || "{}");
+titlesBox.checked = Boolean(viewPrefs.titles);
+flyBox.checked = Boolean(viewPrefs.fly);
+const saveViewPrefs = () => localStorage.setItem(VIEW_PREFS_KEY,
+  JSON.stringify({ titles: titlesBox.checked, fly: flyBox.checked }));
+
+// three-spritetext draws the titles. 3d-force-graph doesn't share its copy
+// of three.js, so this loads a second one, pinned to the same release.
+const SPRITE_TEXT_URL = "https://esm.sh/three-spritetext@1.10.0?deps=three@0.186.0";
 
 const idOf = (end) => (typeof end === "object" ? end.id : end);
 
@@ -312,8 +326,11 @@ function centroid3(points) {
 const graphView = {
   el: $("#graph"),
   fg: null,
+  observer: null,
   hoverId: null,
   framed: false,
+  SpriteText: null, // three-spritetext, once loaded
+  titles: new Map(), // note id -> its title sprite, while titles are shown
   // Node objects persist across updates, so the simulation keeps their
   // positions instead of starting over.
   nodeById: new Map(),
@@ -329,7 +346,9 @@ const graphView = {
       return;
     }
     const el = this.el;
-    const fg = ForceGraph3D()(el)
+    // The controls can only be chosen when the graph is made: fly controls
+    // (keys to fly, drag to look) or the default rotate/zoom/pan.
+    const fg = ForceGraph3D({ controlType: flyBox.checked ? "fly" : "trackball" })(el)
       .backgroundColor(css("--surface-1"))
       .showNavInfo(false)
       .nodeId("id")
@@ -364,11 +383,68 @@ const graphView = {
     fg.d3Force("charge").strength(-40);
     fg.d3Force("link").distance(30);
     fg.d3Force("cluster", clusterForce());
-    new ResizeObserver(() => {
+    this.observer = new ResizeObserver(() => {
       if (el.clientWidth && el.clientHeight) fg.width(el.clientWidth).height(el.clientHeight);
-    }).observe(el);
+    });
+    this.observer.observe(el);
     this.fg = fg;
+    this.shownKey = null; // a new graph has no data yet
     this.render({ structure: true });
+    this.showTitles();
+  },
+
+  // Switching the controls means making a new graph. The node objects keep
+  // their positions, so the layout carries over, and so does the camera.
+  remount() {
+    if (!this.fg) { this.mount(); return; }
+    const { x, y, z } = this.fg.camera().position;
+    this.observer.disconnect();
+    // Fly controls listen for keys on the whole window; stop the old ones.
+    this.fg.controls().dispose?.();
+    this.fg._destructor();
+    this.el.innerHTML = "";
+    this.fg = null;
+    this.titles.clear();
+    this.framed = true; // keep the current view rather than refitting it
+    this.mount();
+    if (this.fg) this.fg.cameraPosition({ x, y, z });
+  },
+
+  // Each note's title floats just above it, in text colours rather than the
+  // tag's (as in 3d-force-graph's text-nodes example).
+  async showTitles() {
+    if (!titlesBox.checked) {
+      this.fg.nodeThreeObject(null);
+      this.titles.clear();
+      return;
+    }
+    if (!this.SpriteText) {
+      try {
+        this.SpriteText = (await import(SPRITE_TEXT_URL)).default;
+      } catch (e) {
+        titlesBox.checked = false;
+        toast(`Titles are unavailable: ${e.message}`);
+        return;
+      }
+    }
+    if (!this.fg || !titlesBox.checked) return; // switched off, or rebuilt, while loading
+    this.titles.clear();
+    this.fg.nodeThreeObject((n) => this.titleSprite(n)).nodeThreeObjectExtend(true);
+  },
+
+  titleSprite(n) {
+    const sprite = new this.SpriteText(n.title);
+    sprite.material.depthWrite = false; // keep the text's background transparent
+    sprite.textHeight = 4;
+    sprite.center.y = -0.6; // above the node
+    sprite.color = this.titleColour(n);
+    this.titles.set(n.id, sprite);
+    return sprite;
+  },
+
+  titleColour(n) {
+    if (n.id === selectedId) return css("--text-primary");
+    return this.emphasised(n.id) ? css("--text-secondary") : withAlpha(css("--text-secondary"), 0.15);
   },
 
   sync() {
@@ -437,6 +513,12 @@ const graphView = {
   restyle() {
     const fg = this.fg;
     fg.nodeColor(fg.nodeColor()).linkColor(fg.linkColor()).linkWidth(fg.linkWidth());
+    // A title is redrawn when its colour is set, so only when it changes.
+    for (const [id, sprite] of this.titles) {
+      const node = this.nodeById.get(id);
+      const colour = node && this.titleColour(node);
+      if (colour && sprite.color !== colour) sprite.color = colour;
+    }
   },
 
   // Fly the camera to a node, once the simulation has given it a position.
@@ -848,6 +930,21 @@ $("#legend").addEventListener("click", (evt) => {
   if (button) setTerm(`${evt.shiftKey ? "~" : "-"}#${button.dataset.tag}`);
 });
 clusterBox.addEventListener("change", () => update({ relayout: true }));
+titlesBox.addEventListener("change", () => {
+  saveViewPrefs();
+  if (graphView.mounted) graphView.showTitles();
+});
+flyBox.addEventListener("change", () => {
+  saveViewPrefs();
+  graphView.remount();
+});
+// Fly controls listen for keys on the whole window, so keys typed into the
+// search box (or any field) stop here, after the field has had them.
+for (const type of ["keydown", "keyup"]) {
+  document.addEventListener(type, (evt) => {
+    if (evt.target.closest?.("input, textarea, select, [contenteditable]")) evt.stopPropagation();
+  });
+}
 for (const input of [depthSelect, hideIsolated]) {
   input.addEventListener("change", () => update({ relayout: true }));
 }

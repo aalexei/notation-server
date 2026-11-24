@@ -35,6 +35,16 @@ colour comes from its first tag. Clicking a legend entry adds or removes
 `-#tag`; shift-clicking adds or removes `~#tag`. The tags given with
 `--exclude-tags` (default `journal`) start out as `-#tag`.
 
+## Moving around the graph
+
+By default, drag to rotate, scroll to zoom and right-drag to pan.
+**Titles** shows each note's title above it (drawn with
+[three-spritetext](https://github.com/vasturiano/three-spritetext), loaded
+from esm.sh the first time). **Fly** switches to fly controls: W/S forward
+and back, A/D left and right, R/F up and down, arrow keys to turn, Q/E to
+roll, Shift to go slower, and drag the mouse to look around. Keys typed
+into the search box don't move the camera. Both settings are remembered.
+
 ## Installing in Emacs
 
 notation-server needs [notation](https://github.com/aalexei/notation),
