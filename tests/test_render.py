@@ -40,7 +40,7 @@ def test_attachment_links_point_next_to_the_note(tmp_path):
 
 def test_configured_keywords_become_pills(tmp_path):
     html = render(tmp_path, ORG, todo_keywords=("TODO WAITING | DONE", "MEET |"))
-    assert 'class="todo WAITING keyword" style="--kw: var(--series-4)"' in html
+    assert 'class="todo WAITING keyword" style="--kw: var(--amber)"' in html
     assert 'class="done DONE keyword"' in html
     assert 'class="todo MEET keyword"' in html
 

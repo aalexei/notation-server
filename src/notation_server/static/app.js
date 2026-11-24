@@ -7,7 +7,7 @@
 "use strict";
 
 const cfg = JSON.parse(document.getElementById("config").textContent);
-const SLOTS = 8; // categorical colour slots; further tags fold into "other"
+const SLOTS = 16; // categorical colour slots (--series-N in app.css); further tags fold into "other"
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const GROUP = "group:"; // id prefix of collapsed groups
 const UNTAGGED = "(untagged)";

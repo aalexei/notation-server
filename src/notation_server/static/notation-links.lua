@@ -16,19 +16,21 @@
 local note_id = ""
 local folded = false
 
--- Colours for common keywords; any other keyword gets a stable one from
--- the palette, so it looks the same in every note.
+-- Colours for common keywords (named colours in app.css, not the graph's
+-- tag colours); any other keyword gets a stable one of the eight, so it
+-- looks the same in every note.
 local KEYWORD_COLOURS = {
-  TODO = "--series-2", NEXT = "--series-1", STARTED = "--series-3", WAITING = "--series-4",
-  DONE = "--series-6", CANCELLED = "--other", CANCELED = "--other",
+  TODO = "--orange", NEXT = "--blue", STARTED = "--aqua", WAITING = "--amber",
+  DONE = "--green", CANCELLED = "--other", CANCELED = "--other",
 }
+local NAMED_COLOURS = { "--blue", "--orange", "--aqua", "--amber", "--pink", "--green", "--violet", "--red" }
 
 local function keyword_colour(keyword, done)
   if KEYWORD_COLOURS[keyword] then return KEYWORD_COLOURS[keyword] end
   if done then return "--other" end
   local hash = 0
   for i = 1, #keyword do hash = (hash * 31 + keyword:byte(i)) % 65536 end
-  return "--series-" .. (hash % 8 + 1)
+  return NAMED_COLOURS[hash % 8 + 1]
 end
 
 local PLANNING = { ["SCHEDULED:"] = true, ["DEADLINE:"] = true, ["CLOSED:"] = true }
