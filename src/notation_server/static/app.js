@@ -316,6 +316,18 @@ function clusterForce() {
   return force;
 }
 
+// A title longer than TITLE_WRAP characters is split over two lines, at the
+// space nearest its middle; one without spaces stays on one line.
+const TITLE_WRAP = 28;
+function wrapTitle(title) {
+  if (title.length <= TITLE_WRAP) return title;
+  let split = -1;
+  for (let i = title.indexOf(" "); i !== -1; i = title.indexOf(" ", i + 1)) {
+    if (split < 0 || Math.abs(i - title.length / 2) < Math.abs(split - title.length / 2)) split = i;
+  }
+  return split < 0 ? title : `${title.slice(0, split)}\n${title.slice(split + 1)}`;
+}
+
 function centroid3(points) {
   const known = points.filter((p) => p && p.x !== undefined);
   if (!known.length) return null;
@@ -433,10 +445,13 @@ const graphView = {
   },
 
   titleSprite(n) {
-    const sprite = new this.SpriteText(n.title);
+    const text = wrapTitle(n.title);
+    const sprite = new this.SpriteText(text);
     sprite.material.depthWrite = false; // keep the text's background transparent
     sprite.textHeight = 4;
-    sprite.center.y = -2.0; // above the node
+    // Above the node. The offset is in title heights, so a two-line title
+    // (twice as tall) takes half of it to sit the same distance away.
+    sprite.center.y = -2.0 / text.split("\n").length;
     sprite.color = this.titleColour(n);
     this.titles.set(n.id, sprite);
     return sprite;
