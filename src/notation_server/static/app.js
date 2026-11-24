@@ -459,7 +459,7 @@ const graphView = {
 
   titleColour(n) {
     if (n.id === selectedId) return css("--text-primary");
-    return this.emphasised(n.id) ? css("--text-secondary") : withAlpha(css("--text-secondary"), 0.15);
+      return this.emphasised(n.id) ? withAlpha(css("--text-secondary"), 0.6) : withAlpha(css("--text-secondary"), 0.15);
   },
 
   sync() {
