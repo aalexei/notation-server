@@ -172,7 +172,6 @@ function buildModel() {
     })),
     ...graph.nodes.filter((n) => !standIn.has(n.id)).map((n) => ({
       ...n, colour: colourFor(category(n)), degree: degree(n.id),
-      clusterCat: slotOf.has(category(n)) ? category(n) : null,
     })),
   ];
   model = { nodes, edges, byId: new Map(nodes.map((n) => [n.id, n])), neighbours };
@@ -290,26 +289,35 @@ function renderLegend() {
 
 // The 3D graph.
 
-// With "Cluster by colour", pull the notes of each colour towards their
-// centroid, so each coloured tag forms its own region.
+// With "Cluster by tag", pull each note towards the centre of every tag it
+// has, folders included, so the notes sharing a tag gather together; notes
+// without tags gather as a group of their own. A note with several tags is
+// pulled towards each equally, so it settles between them, and a note in
+// journal/2025/ sits in that cluster, inside the journal/ one. Collapsed
+// groups aren't pulled.
 function clusterForce() {
   let nodes = [];
+  const clusterTags = (n) => (n.allTags.length ? n.allTags : [UNTAGGED]);
   function force(alpha) {
     if (!clusterBox.checked) return;
     const centres = new Map();
     for (const n of nodes) {
-      if (!n.clusterCat) continue;
-      let c = centres.get(n.clusterCat);
-      if (!c) centres.set(n.clusterCat, (c = { x: 0, y: 0, z: 0, count: 0 }));
-      c.x += n.x; c.y += n.y; c.z += n.z || 0; c.count++;
+      if (n.members) continue;
+      for (const t of clusterTags(n)) {
+        let c = centres.get(t);
+        if (!c) centres.set(t, (c = { x: 0, y: 0, z: 0, count: 0 }));
+        c.x += n.x; c.y += n.y; c.z += n.z || 0; c.count++;
+      }
     }
     const k = alpha * 0.25;
     for (const n of nodes) {
-      const c = n.clusterCat && centres.get(n.clusterCat);
-      if (!c || c.count < 2) continue;
-      n.vx += (c.x / c.count - n.x) * k;
-      n.vy += (c.y / c.count - n.y) * k;
-      n.vz += (c.z / c.count - (n.z || 0)) * k;
+      if (n.members) continue;
+      const cs = clusterTags(n).map((t) => centres.get(t)).filter((c) => c.count >= 2);
+      for (const c of cs) {
+        n.vx += ((c.x / c.count - n.x) * k) / cs.length;
+        n.vy += ((c.y / c.count - n.y) * k) / cs.length;
+        n.vz += ((c.z / c.count - (n.z || 0)) * k) / cs.length;
+      }
     }
   }
   force.initialize = (ns) => { nodes = ns; };
