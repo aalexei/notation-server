@@ -37,13 +37,27 @@ colour comes from its first tag. Clicking a legend entry adds or removes
 
 ## Moving around the graph
 
-By default, drag to rotate, scroll to zoom and right-drag to pan.
+Drag to rotate around the orbit centre, scroll to zoom towards it and
+right-drag to pan. Selecting a note makes it the orbit centre.
+
+Once you've clicked the graph, the keys move you through it. W/S, A/D
+and R/F move the orbit centre forward and back, left and right, up and
+down, as the camera faces, at a steady speed, and the camera moves with
+it, keeping its distance and orientation. The arrow keys orbit the camera
+around the orbit centre, as dragging the mouse that way does. Q/E roll,
+and Shift moves slower. With the camera on the orbit centre, the keys
+behave much like flying. A small ringed marker shows where the orbit
+centre is; like a node, it shrinks with distance.
+
+**Center pivot** moves the orbit centre to the middle of the graph; the
+camera moves with it. The **Go to pivot** / **Frame all** button (or Home)
+alternates, without moving the orbit centre, between moving the camera
+onto it, to look around from there, and backing away until the whole graph
+is in view.
+
 **Titles** shows each note's title above it (drawn with
 [three-spritetext](https://github.com/vasturiano/three-spritetext), loaded
-from esm.sh the first time). **Fly** switches to fly controls: W/S forward
-and back, A/D left and right, R/F up and down, arrow keys to turn, Q/E to
-roll, Shift to go slower, and drag the mouse to look around. Keys typed
-into the search box don't move the camera. Both settings are remembered.
+from esm.sh the first time); the setting is remembered.
 
 ## Installing in Emacs
 

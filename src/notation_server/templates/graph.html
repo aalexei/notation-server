@@ -44,15 +44,16 @@ A..B · only notes created in a range of id beginnings (YYYYMMDDhhmmss), either 
           <label><input id="hide-isolated" type="checkbox" checked> Hide unlinked</label>
           <label title="Pull notes that share a tag or folder together; untagged notes gather too"><input id="cluster" type="checkbox"> Cluster by tag</label>
           <label title="Show each note's title next to it"><input id="titles" type="checkbox"> Titles</label>
-          <label title="Fly through the graph: W/S forward and back, A/D left and right, R/F up and down, arrow keys to turn, Q/E to roll, Shift to go slower; drag the mouse to look around"><input id="fly" type="checkbox"> Fly</label>
+          <button type="button" id="centre-pivot" title="Move the pivot (the ringed marker the view turns around) to the middle of the graph; the view moves with it">Center pivot</button>
+          <button type="button" id="view-toggle" title="Move onto the pivot, to look around from it (Home, with the graph selected)">Go to pivot</button>
           <span id="stats"></span>
         </div>
         <div id="legend" role="group"
              aria-label="Colour legend: click a tag to hide or show its notes, shift-click to collapse or expand them"></div>
       </div>
       <div id="views">
-        <div id="graph" class="graph" role="img"
-             aria-label="Graph of linked notes. Drag to rotate, scroll to zoom, right-drag to pan."></div>
+        <div id="graph" class="graph" role="application" tabindex="0"
+             aria-label="Graph of linked notes. Drag to rotate, scroll to zoom, right-drag to pan. Keys: W S forward and back, A D left and right, R F up and down, arrow keys to orbit as dragging does, Q E to roll, Shift to move slower, Home to switch between moving onto the pivot and backing away to frame everything. A ringed marker, shrinking with distance like a node, shows the pivot, the point the view turns around."></div>
         <div id="problems" hidden></div>
       </div>
     </section>

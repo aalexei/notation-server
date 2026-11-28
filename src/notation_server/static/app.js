@@ -28,19 +28,18 @@ const depthSelect = $("#depth");
 const hideIsolated = $("#hide-isolated");
 const clusterBox = $("#cluster");
 const titlesBox = $("#titles");
-const flyBox = $("#fly");
 
-// Titles and fly controls are remembered between visits.
+// Titles are remembered between visits.
 const VIEW_PREFS_KEY = "notation-server.graphView";
 const viewPrefs = JSON.parse(localStorage.getItem(VIEW_PREFS_KEY) || "{}");
 titlesBox.checked = Boolean(viewPrefs.titles);
-flyBox.checked = Boolean(viewPrefs.fly);
-const saveViewPrefs = () => localStorage.setItem(VIEW_PREFS_KEY,
-  JSON.stringify({ titles: titlesBox.checked, fly: flyBox.checked }));
+const saveViewPrefs = () => localStorage.setItem(VIEW_PREFS_KEY, JSON.stringify({ titles: titlesBox.checked }));
 
-// three-spritetext draws the titles. 3d-force-graph doesn't share its copy
-// of three.js, so this loads a second one, pinned to the same release.
+// three-spritetext draws the titles, and three.js the orbit-centre marker.
+// 3d-force-graph doesn't share its copy of three.js, so these load a second
+// one, pinned to the same release (both URLs resolve to the same module).
 const SPRITE_TEXT_URL = "https://esm.sh/three-spritetext@1.10.0?deps=three@0.186.0";
+const THREE_URL = "https://esm.sh/three@0.186.0";
 
 const idOf = (end) => (typeof end === "object" ? end.id : end);
 
@@ -346,7 +345,6 @@ function centroid3(points) {
 const graphView = {
   el: $("#graph"),
   fg: null,
-  observer: null,
   hoverId: null,
   framed: false,
   SpriteText: null, // three-spritetext, once loaded
@@ -366,9 +364,7 @@ const graphView = {
       return;
     }
     const el = this.el;
-    // The controls can only be chosen when the graph is made: fly controls
-    // (keys to fly, drag to look) or the default rotate/zoom/pan.
-    const fg = ForceGraph3D({ controlType: flyBox.checked ? "fly" : "trackball" })(el)
+    const fg = ForceGraph3D()(el)
       .backgroundColor(css("--surface-1"))
       .showNavInfo(false)
       .nodeId("id")
@@ -403,31 +399,109 @@ const graphView = {
     fg.d3Force("charge").strength(-40);
     fg.d3Force("link").distance(30);
     fg.d3Force("cluster", clusterForce());
-    this.observer = new ResizeObserver(() => {
+    // The trackball's own keys (A/S/D change what a drag does) would clash
+    // with moving by keyboard (see keyMove).
+    fg.controls().keys = [];
+    new ResizeObserver(() => {
       if (el.clientWidth && el.clientHeight) fg.width(el.clientWidth).height(el.clientHeight);
-    });
-    this.observer.observe(el);
+    }).observe(el);
     this.fg = fg;
-    this.shownKey = null; // a new graph has no data yet
     this.render({ structure: true });
     this.showTitles();
+    this.showCentre();
   },
 
-  // Switching the controls means making a new graph. The node objects keep
-  // their positions, so the layout carries over, and so does the camera.
-  remount() {
-    if (!this.fg) { this.mount(); return; }
-    const { x, y, z } = this.fg.camera().position;
-    this.observer.disconnect();
-    // Fly controls listen for keys on the whole window; stop the old ones.
-    this.fg.controls().dispose?.();
-    this.fg._destructor();
-    this.el.innerHTML = "";
-    this.fg = null;
-    this.titles.clear();
-    this.framed = true; // keep the current view rather than refitting it
-    this.mount();
-    if (this.fg) this.fg.cameraPosition({ x, y, z });
+  // The middle of the shown notes' bounding box, and its diagonal.
+  graphMiddle() {
+    const bbox = this.fg && this.fg.getGraphBbox();
+    if (!bbox) return null; // no notes shown
+    const { x: [x0, x1], y: [y0, y1], z: [z0, z1] } = bbox;
+    return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, z: (z0 + z1) / 2, size: Math.hypot(x1 - x0, y1 - y0, z1 - z0) };
+  },
+
+  // "Center pivot": move the orbit centre to the middle of the graph. The
+  // camera moves with it, keeping its distance and orientation.
+  centrePivot() {
+    const middle = this.graphMiddle();
+    if (!middle) return;
+    const target = this.fg.controls().target;
+    const camera = this.fg.camera().position;
+    this.fg.cameraPosition(
+      { x: camera.x + middle.x - target.x, y: camera.y + middle.y - target.y, z: camera.z + middle.z - target.z },
+      { x: middle.x, y: middle.y, z: middle.z }, 800);
+  },
+
+  // The other button (and Home) alternates, along the line from the orbit
+  // centre to the camera and without moving the orbit centre, between going
+  // onto the orbit centre, to look around from it (as close as the controls
+  // allow), and backing away until every shown note is in view.
+  PIVOT_DISTANCE: 1,
+  nextView: "pivot", // the graph is framed once it first settles
+  toggleView() {
+    if (!this.fg) return;
+    const camera = this.fg.camera();
+    const target = this.fg.controls().target;
+    const back = camera.position.clone().sub(target).normalize(); // orbit centre -> camera
+    if (!back.lengthSq()) back.set(0, 0, 1);
+    let distance = this.PIVOT_DISTANCE;
+    if (this.nextView === "frame") {
+      // Far enough for a sphere around the orbit centre, holding every shown
+      // note, to fit the narrower of the two fields of view.
+      const nodes = this.fg.graphData().nodes;
+      const reach = Math.max(1, ...nodes.map((n) => Math.hypot(n.x - target.x, n.y - target.y, (n.z || 0) - target.z)));
+      const vfov = (camera.fov * Math.PI) / 180;
+      const hfov = 2 * Math.atan(Math.tan(vfov / 2) * camera.aspect);
+      distance = (reach + 20) / Math.sin(Math.min(vfov, hfov) / 2);
+    }
+    this.fg.cameraPosition(
+      { x: target.x + back.x * distance, y: target.y + back.y * distance, z: target.z + back.z * distance },
+      { x: target.x, y: target.y, z: target.z }, 800);
+    this.nextView = this.nextView === "frame" ? "pivot" : "frame";
+    const button = $("#view-toggle");
+    button.textContent = this.nextView === "frame" ? "Frame all" : "Go to pivot";
+    button.title = this.nextView === "frame"
+      ? "Back away from the pivot until the whole graph is in view (Home, with the graph selected)"
+      : "Move onto the pivot, to look around from it (Home, with the graph selected)";
+  },
+
+  // A three-ring gyroscope marks the orbit centre: the point the mouse
+  // rotates around and zooms towards, and the keys carry along. Like a node,
+  // it has a fixed size in the graph, so it shrinks with distance; nodes in
+  // front of it hide it, and its rings show which way the world is turned.
+  // It fades out as the camera comes within a few ring widths, so it isn't
+  // drawn across the view when the camera is on the orbit centre.
+  MARKER_RADIUS: 5, // graph units, about a medium node
+  async showCentre() {
+    let THREE;
+    try {
+      THREE = await import(THREE_URL);
+    } catch (e) {
+      return; // the graph works without it
+    }
+    const material = new THREE.LineBasicMaterial({ color: css("--text-muted"), transparent: true, opacity: 0.8 });
+    const ring = new THREE.BufferGeometry().setFromPoints(new THREE.EllipseCurve(0, 0, 1, 1).getPoints(48));
+    const marker = new THREE.Group();
+    for (const [rx, ry] of [[0, 0], [Math.PI / 2, 0], [0, Math.PI / 2]]) {
+      const loop = new THREE.LineLoop(ring, material);
+      loop.rotation.set(rx, ry, 0);
+      marker.add(loop);
+    }
+    const dot = new THREE.MeshBasicMaterial({ color: css("--text-muted"), transparent: true });
+    marker.add(new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), dot));
+    marker.scale.setScalar(this.MARKER_RADIUS);
+    this.centreMarker = marker;
+    this.fg.scene().add(marker);
+    const follow = () => {
+      const target = this.fg.controls().target;
+      marker.position.set(target.x, target.y, target.z);
+      const away = this.fg.camera().position.distanceTo(target) / this.MARKER_RADIUS; // in ring radii
+      const fade = Math.min(1, Math.max(0, (away - 2) / 4)); // gone within 2 radii, full from 6
+      material.opacity = 0.8 * fade;
+      dot.opacity = fade;
+      marker.visible = fade > 0;
+      requestAnimationFrame(follow);
+    };
+    follow();
   },
 
   // Each note's title floats just above it, in text colours rather than the
@@ -559,8 +633,92 @@ const graphView = {
   theme() {
     this.fg.backgroundColor(css("--surface-1"));
     this.restyle();
+    this.centreMarker?.traverse((o) => o.material?.color.set(css("--text-muted")));
   },
 };
+
+// Keyboard movement, once the graph has been clicked (so has the focus):
+//
+//   W/S, A/D, R/F   move the orbit centre forward and back, left and right,
+//                   up and down, as the camera faces; the camera moves with
+//                   it, keeping its distance and orientation
+//   arrow keys      orbit the camera around the orbit centre, as dragging
+//                   the mouse that way does
+//   Q/E             roll around the direction the camera faces
+//   Shift           move slower;  Home  the "Go to pivot" / "Frame all" button
+//
+// Clicking a note, dragging and scrolling work as before.
+
+const MOVE_KEYS = {
+  KeyW: ["move", 0, 0, 1], KeyS: ["move", 0, 0, -1],
+  KeyA: ["move", -1, 0, 0], KeyD: ["move", 1, 0, 0],
+  KeyR: ["move", 0, 1, 0], KeyF: ["move", 0, -1, 0],
+  // [kind, sideways, up]: the direction the mouse would be dragged.
+  ArrowLeft: ["orbit", -1, 0], ArrowRight: ["orbit", 1, 0],
+  ArrowUp: ["orbit", 0, 1], ArrowDown: ["orbit", 0, -1],
+  KeyQ: ["roll", -1], KeyE: ["roll", 1],
+};
+// As 3d-force-graph set up three.js's fly controls: Shift slows moving, not turning.
+const MOVE_SPEED = 300; // graph units a second
+const TURN_SPEED = Math.PI / 6; // radians a second
+const keyMove = { held: new Set(), slow: false, last: 0, frame: 0 };
+
+function moveStep(now) {
+  const fg = graphView.fg;
+  if (!fg || !keyMove.held.size) { keyMove.frame = 0; return; }
+  const dt = Math.min(0.1, (now - keyMove.last) / 1000); // seconds; capped after a stall
+  keyMove.last = now;
+  const camera = fg.camera();
+  const target = fg.controls().target;
+  const offset = target.clone().sub(camera.position); // camera -> orbit centre
+  const forward = offset.clone().normalize();
+  const right = forward.clone().cross(camera.up).normalize();
+  if (!right.lengthSq()) { keyMove.frame = requestAnimationFrame(moveStep); return; } // looking straight along "up"
+  const up = right.clone().cross(forward).normalize();
+  const speed = MOVE_SPEED * (keyMove.slow ? 0.1 : 1) * dt;
+  const turn = TURN_SPEED * dt;
+  const step = camera.position.clone().set(0, 0, 0);
+  for (const code of keyMove.held) {
+    const [kind, a, b, c] = MOVE_KEYS[code];
+    if (kind === "move") {
+      step.addScaledVector(right, a).addScaledVector(up, b).addScaledVector(forward, c);
+    } else if (kind === "orbit") {
+      // The trackball's own rule for a drag: turn about the axis across the
+      // drag direction and the line from the orbit centre to the camera.
+      const eye = offset.clone().negate();
+      const sideways = camera.up.clone().cross(eye).normalize();
+      const axis = camera.up.clone().normalize().multiplyScalar(b).addScaledVector(sideways, a).cross(eye).normalize();
+      offset.applyAxisAngle(axis, turn);
+      camera.up.applyAxisAngle(axis, turn);
+    } else {
+      camera.up.applyAxisAngle(forward, a * turn); // roll
+    }
+  }
+  // Moving shifts the orbit centre and camera together; orbiting swings the
+  // camera around the orbit centre.
+  if (step.lengthSq()) target.addScaledVector(step.normalize(), speed);
+  camera.position.copy(target).sub(offset);
+  camera.lookAt(target);
+  keyMove.frame = requestAnimationFrame(moveStep);
+}
+
+graphView.el.addEventListener("keydown", (evt) => {
+  keyMove.slow = evt.shiftKey;
+  if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+  if (evt.key === "Home") { evt.preventDefault(); graphView.toggleView(); return; }
+  if (!MOVE_KEYS[evt.code]) return;
+  evt.preventDefault(); // arrow keys would scroll
+  keyMove.held.add(evt.code);
+  if (!keyMove.frame) {
+    keyMove.last = performance.now();
+    keyMove.frame = requestAnimationFrame(moveStep);
+  }
+});
+graphView.el.addEventListener("keyup", (evt) => {
+  keyMove.slow = evt.shiftKey;
+  keyMove.held.delete(evt.code);
+});
+graphView.el.addEventListener("blur", () => keyMove.held.clear());
 
 // The note panel's graph of the open note and its nearest neighbours: every
 // note it links to or that links to it, whatever the search box hides. Past
@@ -957,17 +1115,8 @@ titlesBox.addEventListener("change", () => {
   saveViewPrefs();
   if (graphView.mounted) graphView.showTitles();
 });
-flyBox.addEventListener("change", () => {
-  saveViewPrefs();
-  graphView.remount();
-});
-// Fly controls listen for keys on the whole window, so keys typed into the
-// search box (or any field) stop here, after the field has had them.
-for (const type of ["keydown", "keyup"]) {
-  document.addEventListener(type, (evt) => {
-    if (evt.target.closest?.("input, textarea, select, [contenteditable]")) evt.stopPropagation();
-  });
-}
+$("#centre-pivot").addEventListener("click", () => graphView.centrePivot());
+$("#view-toggle").addEventListener("click", () => graphView.toggleView());
 for (const input of [depthSelect, hideIsolated]) {
   input.addEventListener("change", () => update({ relayout: true }));
 }
